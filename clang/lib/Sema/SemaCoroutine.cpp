@@ -139,6 +139,144 @@ static QualType lookupPromiseType(Sema &S, const FunctionDecl *FD,
   return PromiseType;
 }
 
+/// Look up the std::experimental::suspend_point_handle<...> type.
+static QualType lookupSuspendPointHandleType(Sema &S, QualType PromiseType,
+                                             bool CanResume,
+                                             bool CanDestroy,
+                                             SourceLocation Loc) {
+  NamespaceDecl *StdExp = S.lookupStdExperimentalNamespace();
+  assert(StdExp && "Should already be diagnosed");
+
+  LookupResult Result(S, &S.PP.getIdentifierTable().get("suspend_point_handle"),
+                      Loc, Sema::LookupOrdinaryName);
+  if (!S.LookupQualifiedName(Result, StdExp)) {
+    S.Diag(Loc, diag::err_implied_coroutine_type_not_found)
+        << "std::experimental::suspend_point_handle";
+    return QualType();
+  }
+
+  ClassTemplateDecl *SuspendPointHandle = Result.getAsSingle<ClassTemplateDecl>();
+  if (!SuspendPointHandle) {
+    Result.suppressDiagnostics();
+    NamedDecl *Found = *Result.begin();
+    S.Diag(Found->getLocation(), diag::err_malformed_std_coroutine_handle);
+    return QualType();
+  }
+
+  // Form template argument list for suspend_point_handle<...>
+  TemplateArgumentListInfo Args(Loc, Loc);
+
+  if (!PromiseType.isNull()) {
+    // Lookup std::experimental::with_promise<P>
+    LookupResult WithPromiseResult(S, &S.PP.getIdentifierTable().get("with_promise"),
+                                   Loc, Sema::LookupOrdinaryName);
+    if (!S.LookupQualifiedName(WithPromiseResult, StdExp)) {
+      S.Diag(Loc, diag::err_implied_coroutine_type_not_found)
+          << "std::experimental::with_promise";
+      return QualType();
+    }
+
+    ClassTemplateDecl *WithPromise = WithPromiseResult.getAsSingle<ClassTemplateDecl>();
+    if (!WithPromise) {
+      WithPromiseResult.suppressDiagnostics();
+      NamedDecl *Found = *WithPromiseResult.begin();
+      S.Diag(Found->getLocation(), diag::err_malformed_std_coroutine_handle);
+      return QualType();
+    }
+
+    TemplateArgumentListInfo WithPromiseArgs(Loc, Loc);
+    WithPromiseArgs.addArgument(TemplateArgumentLoc(
+      TemplateArgument(PromiseType),
+      S.Context.getTrivialTypeSourceInfo(PromiseType, Loc)));
+
+    // Build the with_promise<P> template-id.
+    QualType WithPromiseType =
+      S.CheckTemplateIdType(TemplateName(WithPromise), Loc, WithPromiseArgs);
+    if (WithPromiseType.isNull()) {
+      return QualType();
+    }
+    if (S.RequireCompleteType(Loc, WithPromiseType,
+                              diag::err_coroutine_type_missing_specialization)) {
+      return QualType();
+    }
+
+    Args.addArgument(TemplateArgumentLoc(
+      TemplateArgument(WithPromiseType),
+      S.Context.getTrivialTypeSourceInfo(WithPromiseType, Loc)));
+  }
+
+  if (CanResume) {
+    // Add the 'with_resume' template arg.
+    LookupResult WithResumeResult(S, &S.PP.getIdentifierTable().get("with_resume"),
+                                  Loc, Sema::LookupOrdinaryName);
+    if (!S.LookupQualifiedName(WithResumeResult, StdExp)) {
+      S.Diag(Loc, diag::err_implied_coroutine_type_not_found)
+          << "std::experimental::with_resume";
+      return QualType();
+    }
+
+    RecordDecl* WithResume = WithResumeResult.getAsSingle<RecordDecl>();
+    if (!WithResume) {
+      WithResumeResult.suppressDiagnostics();
+      NamedDecl* Found = *WithResumeResult.begin();
+      S.Diag(Found->getLocation(), diag::err_malformed_std_coroutine_handle);
+      return QualType();
+    }
+
+    QualType WithResumeType = S.Context.getRecordType(WithResume);
+    if (WithResumeType.isNull()) {
+      S.Diag(WithResume->getLocation(), diag::err_malformed_std_coroutine_handle);
+      return QualType();
+    }
+
+    Args.addArgument(TemplateArgumentLoc(
+      TemplateArgument(WithResumeType),
+      S.Context.getTrivialTypeSourceInfo(WithResumeType, Loc)));
+  }
+
+  if (CanDestroy) {
+    // Add the 'with_destroy' template arg.
+    LookupResult WithDestroyResult(S, &S.PP.getIdentifierTable().get("with_destroy"),
+                                  Loc, Sema::LookupOrdinaryName);
+    if (!S.LookupQualifiedName(WithDestroyResult, StdExp)) {
+      S.Diag(Loc, diag::err_implied_coroutine_type_not_found)
+          << "std::experimental::with_destroy";
+      return QualType();
+    }
+
+    RecordDecl* WithDestroy = WithDestroyResult.getAsSingle<RecordDecl>();
+    if (!WithDestroy) {
+      WithDestroyResult.suppressDiagnostics();
+      NamedDecl* Found = *WithDestroyResult.begin();
+      S.Diag(Found->getLocation(), diag::err_malformed_std_coroutine_handle);
+      return QualType();
+    }
+
+    QualType WithDestroyType = S.Context.getRecordType(WithDestroy);
+    if (WithDestroyType.isNull()) {
+      S.Diag(WithDestroy->getLocation(), diag::err_malformed_std_coroutine_handle);
+      return QualType();
+    }
+
+    Args.addArgument(TemplateArgumentLoc(
+      TemplateArgument(WithDestroyType),
+      S.Context.getTrivialTypeSourceInfo(WithDestroyType, Loc)));
+  }
+
+  // Build the template-id.
+  QualType SuspendPointHandleType =
+      S.CheckTemplateIdType(TemplateName(SuspendPointHandle), Loc, Args);
+  if (SuspendPointHandleType.isNull()) {
+    return QualType();
+  }
+  if (S.RequireCompleteType(Loc, SuspendPointHandleType,
+                            diag::err_coroutine_type_missing_specialization)) {
+    return QualType();
+  }
+
+  return SuspendPointHandleType;
+}
+
 /// Look up the std::experimental::coroutine_handle<PromiseType>.
 static QualType lookupCoroutineHandleType(Sema &S, QualType PromiseType,
                                           SourceLocation Loc) {
@@ -318,6 +456,36 @@ static Expr *buildBuiltinCall(Sema &S, SourceLocation Loc, Builtin::ID Id,
   return Call.get();
 }
 
+static ExprResult buildSuspendPointHandle(Sema &S, QualType PromiseType,
+                                          bool CanResume,
+                                          bool CanDestroy,
+                                          SourceLocation Loc) {
+  QualType SuspendPointHandleType = lookupSuspendPointHandleType(
+      S, PromiseType, CanResume, CanDestroy, Loc);
+  if (SuspendPointHandleType.isNull())
+    return ExprError();
+
+  DeclContext *LookupCtx = S.computeDeclContext(SuspendPointHandleType);
+  LookupResult Found(S, &S.PP.getIdentifierTable().get("__from_address"), Loc,
+                     Sema::LookupOrdinaryName);
+  if (!S.LookupQualifiedName(Found, LookupCtx)) {
+    S.Diag(Loc, diag::err_coroutine_handle_missing_member)
+        << "__from_address";
+    return ExprError();
+  }
+
+  Expr *FramePtr =
+      buildBuiltinCall(S, Loc, Builtin::BI__builtin_coro_frame, {});
+
+  CXXScopeSpec SS;
+  ExprResult FromAddr =
+      S.BuildDeclarationNameExpr(SS, Found, /*NeedsADL=*/false);
+  if (FromAddr.isInvalid())
+    return ExprError();
+
+  return S.ActOnCallExpr(nullptr, FromAddr.get(), Loc, FramePtr, Loc);
+}
+
 static ExprResult buildCoroutineHandle(Sema &S, QualType PromiseType,
                                        SourceLocation Loc) {
   QualType CoroHandleType = lookupCoroutineHandleType(S, PromiseType, Loc);
@@ -393,7 +561,7 @@ static Expr *maybeTailCall(Sema &S, QualType RetType, Expr *E,
   // EvaluateBinaryTypeTrait(BTT_IsConvertible, ...) which is at the moment
   // a private function in SemaExprCXX.cpp
 
-  ExprResult AddressExpr = buildMemberCall(S, E, Loc, "address", None);
+  ExprResult AddressExpr = buildMemberCall(S, E, Loc, "__address", None);
   if (AddressExpr.isInvalid())
     return nullptr;
 
@@ -413,7 +581,11 @@ static ReadySuspendResumeResult buildCoawaitCalls(Sema &S, VarDecl *CoroPromise,
   // Assume invalid until we see otherwise.
   ReadySuspendResumeResult Calls = {{}, Operand, /*IsInvalid=*/true};
 
-  ExprResult CoroHandleRes = buildCoroutineHandle(S, CoroPromise->getType(), Loc);
+  ExprResult CoroHandleRes = buildSuspendPointHandle(
+      S, CoroPromise->getType(),
+      true /* CanResume */,
+      true /* CanDestroy */,
+      Loc);
   if (CoroHandleRes.isInvalid())
     return Calls;
   Expr *CoroHandle = CoroHandleRes.get();

@@ -1,6 +1,9 @@
 // RUN: %clang_cc1 -triple x86_64-unknown-linux-gnu -fcoroutines-ts -std=c++14 \
 // RUN:   -emit-llvm %s -o - -disable-llvm-passes -Wno-coroutine -Wno-unused | FileCheck %s
 
+#include <experimental/coroutine>
+
+#if 0
 namespace std {
 namespace experimental {
 template <typename... T>
@@ -22,22 +25,23 @@ struct coroutine_handle : coroutine_handle<> {
 
 }
 }
+#endif
 
 struct init_susp {
   bool await_ready();
-  void await_suspend(std::experimental::coroutine_handle<>);
+  void await_suspend(std::experimental::suspend_point_handle<>);
   void await_resume();
 };
 struct final_susp {
   bool await_ready();
-  void await_suspend(std::experimental::coroutine_handle<>);
+  void await_suspend(std::experimental::suspend_point_handle<>);
   void await_resume();
 };
 
 struct suspend_always {
   int stuff;
   bool await_ready();
-  void await_suspend(std::experimental::coroutine_handle<>);
+  void await_suspend(std::experimental::suspend_point_handle<>);
   void await_resume();
 };
 
@@ -48,6 +52,7 @@ struct std::experimental::coroutine_traits<void> {
     init_susp initial_suspend();
     final_susp final_suspend();
     void return_void();
+    void unhandled_exception();
   };
 };
 
@@ -109,7 +114,7 @@ struct suspend_maybe {
   float stuff;
   ~suspend_maybe();
   bool await_ready();
-  bool await_suspend(std::experimental::coroutine_handle<>);
+  bool await_suspend(std::experimental::suspend_point_handle<>);
   void await_resume();
 };
 
@@ -122,6 +127,7 @@ struct std::experimental::coroutine_traits<void,int> {
     final_susp final_suspend();
     void return_void();
     suspend_maybe yield_value(int);
+    void unhandled_exception();
   };
 };
 
@@ -285,7 +291,7 @@ struct RefTag { };
 
 struct AwaitResumeReturnsLValue {
   bool await_ready();
-  void await_suspend(std::experimental::coroutine_handle<>);
+  void await_suspend(std::experimental::suspend_point_handle<>);
   RefTag& await_resume();
 };
 
@@ -298,6 +304,7 @@ struct std::experimental::coroutine_traits<void,double> {
     final_susp final_suspend();
     void return_void();
     AwaitResumeReturnsLValue yield_value(int);
+    void unhandled_exception();
   };
 };
 
@@ -330,7 +337,7 @@ void AwaitReturnsLValue(double) {
 
 struct TailCallAwait {
   bool await_ready();
-  std::experimental::coroutine_handle<> await_suspend(std::experimental::coroutine_handle<>);
+  std::experimental::continuation_handle await_suspend(std::experimental::suspend_point_handle<>);
   void await_resume();
 };
 

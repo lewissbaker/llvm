@@ -86,6 +86,192 @@ struct coroutine_traits
 {
 };
 
+class with_set_done;
+class with_resume;
+
+class _LIBCPP_TYPE_VIS continuation_handle {
+public:
+  _LIBCPP_INLINE_VISIBILITY
+  _LIBCPP_CONSTEXPR continuation_handle() _NOEXCEPT : __handle_(nullptr), __execute_(nullptr) {}
+
+  _LIBCPP_INLINE_VISIBILITY
+  _LIBCPP_CONSTEXPR explicit operator bool() const _NOEXCEPT { return __execute_; }
+
+  _LIBCPP_INLINE_VISIBILITY
+  _LIBCPP_CONSTEXPR bool operator!() const _NOEXCEPT { return !__execute_; }
+
+  _LIBCPP_INLINE_VISIBILITY
+  void operator()() const {
+    _LIBCPP_ASSERT(__execute_, "UB to invoke an invalid continuation");
+    __execute_(__handle_);
+  }
+
+  void* __address() const _NOEXCEPT { return __handle_; }
+
+private:
+  friend with_set_done;
+  friend with_resume;
+
+  explicit continuation_handle(void* __handle, void (*__execute)(void*)) _NOEXCEPT
+  : __handle_(__handle)
+  , __execute_(__execute)
+  {}
+
+  void* __handle_;
+  void (*__execute_)(void*);
+};
+
+class _LIBCPP_TYPE_VIS __suspend_point_handle_base {
+public:
+  _LIBCPP_INLINE_VISIBILITY
+  _LIBCPP_CONSTEXPR explicit operator bool() const _NOEXCEPT { return __handle_; }
+
+  _LIBCPP_INLINE_VISIBILITY
+  _LIBCPP_CONSTEXPR bool operator!() const _NOEXCEPT { return !__handle_; }
+protected:
+  _LIBCPP_CONSTEXPR __suspend_point_handle_base() _NOEXCEPT : __handle_(nullptr) {}
+  void* __handle_;
+};
+
+struct with_set_done {
+  template <typename _Base>
+  class _LIBCPP_TEMPLATE_VIS __mixin : public _Base {
+  public:
+    _LIBCPP_INLINE_VISIBILITY
+    continuation_handle set_done() const {
+      return continuation_handle{this->__handle_, [](void* __handle) {
+        // TODO: Implement me.
+        __builtin_coro_resume(__handle);
+      }};
+    }
+  protected:
+    using _Base::_Base;
+  };
+};
+
+struct with_destroy {
+  template <typename _Base>
+  class _LIBCPP_TEMPLATE_VIS __mixin : public _Base {
+  public:
+    _LIBCPP_INLINE_VISIBILITY
+    void destroy() const {
+      _LIBCPP_ASSERT(this->__handle_, "destroy() can only be called on a valid handle");
+      __builtin_coro_destroy(this->__handle_);
+    }
+  protected:
+    using _Base::_Base;
+  };
+};
+
+struct with_resume {
+  template <typename _Base>
+  class _LIBCPP_TEMPLATE_VIS __mixin : public _Base {
+  public:
+    _LIBCPP_INLINE_VISIBILITY
+    continuation_handle resume() const {
+      _LIBCPP_ASSERT(this->__handle_, "resume() can only be called on a valid handle");
+      return continuation_handle{this->__handle_, [](void* __handle) {
+        __builtin_coro_resume(__handle);
+      }};
+    }
+  protected:
+    using _Base::_Base;
+  };
+};
+
+template <typename _Promise>
+struct with_promise {
+  template <typename _Base>
+  class _LIBCPP_TEMPLATE_VIS __mixin : public _Base {
+  public:
+    _LIBCPP_INLINE_VISIBILITY
+    _Promise& promise() const {
+      return *static_cast<_Promise*>(
+        __builtin_coro_promise(this->__handle_, _LIBCPP_ALIGNOF(_Promise), false));
+    }
+  protected:
+    using _Base::_Base;
+  };
+};
+
+template <typename _Tp>
+struct __is_valid_suspend_point_operation : std::false_type {};
+template <>
+struct __is_valid_suspend_point_operation<with_destroy> : std::true_type {};
+template <>
+struct __is_valid_suspend_point_operation<with_resume> : std::true_type {};
+template <>
+struct __is_valid_suspend_point_operation<with_set_done> : std::true_type {};
+template <typename _Promise>
+struct __is_valid_suspend_point_operation<with_promise<_Promise>> : std::true_type {};
+
+template <typename _Base, typename... _Operations>
+struct __make_suspend_point_handle;
+
+template <typename _Base, typename _FirstOp, typename... _RemainingOps>
+struct __make_suspend_point_handle<_Base, _FirstOp, _RemainingOps...> : __make_suspend_point_handle<
+  typename _FirstOp::template __mixin<_Base>,
+  _RemainingOps...> {};
+
+template <typename _Result>
+struct __make_suspend_point_handle<_Result> {
+  using type = _Result;
+};
+
+template <typename... _Operations>
+using __suspend_point_handle_base_t =
+  typename __make_suspend_point_handle<
+    __suspend_point_handle_base, _Operations...>::type;
+
+template <typename... _Ts>
+struct __is_subset_of {
+  template <typename _U>
+  using __is_member = disjunction<is_same<_U, _Ts>...>;
+
+  template <typename... _Us>
+  static constexpr bool __value = conjunction_v<__is_member<_Us>...>;
+};
+
+template <typename... _Operations>
+class _LIBCPP_TEMPLATE_VIS suspend_point_handle
+  : public __suspend_point_handle_base_t<_Operations...> {
+  using _Base = __suspend_point_handle_base_t<_Operations...>;
+
+  static_assert(
+    conjunction_v<__is_valid_suspend_point_operation<_Operations>...>,
+    "Template parameters must be one of the built-in suspend-point operations");
+
+  template <typename... _OtherOperations>
+  friend class suspend_point_handle;
+
+public:
+  _LIBCPP_INLINE_VISIBILITY
+  _LIBCPP_CONSTEXPR suspend_point_handle() _NOEXCEPT = default;
+
+  _LIBCPP_INLINE_VISIBILITY
+  _LIBCPP_CONSTEXPR suspend_point_handle(const suspend_point_handle&) _NOEXCEPT = default;
+
+  _LIBCPP_INLINE_VISIBILITY
+  ~suspend_point_handle() _NOEXCEPT = default;
+
+  // Allow implicit conversion from a suspend_point_handle with a wider interface.
+  template <
+    typename... _OtherOperations,
+    enable_if_t<__is_subset_of<_OtherOperations...>::template __value<_Operations...>, int> = 0>
+  suspend_point_handle(suspend_point_handle<_OtherOperations...> __sph) _NOEXCEPT
+  {
+    this->__handle_ = __sph.__handle_;
+  }
+
+  // Allow construction from the coroutine frame pointer.
+  // This is called by the compiler.
+  static suspend_point_handle __from_address(void* __handle) _NOEXCEPT {
+    suspend_point_handle __h;
+    __h.__handle_ = __handle;
+    return __h;
+  }
+};
+
 template <typename _Promise = void>
 class _LIBCPP_TEMPLATE_VIS coroutine_handle;
 
