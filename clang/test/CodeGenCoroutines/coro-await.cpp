@@ -27,17 +27,6 @@ struct coroutine_handle : coroutine_handle<> {
 }
 #endif
 
-struct init_susp {
-  bool await_ready();
-  void await_suspend(std::experimental::suspend_point_handle<>);
-  void await_resume();
-};
-struct final_susp {
-  bool await_ready();
-  void await_suspend(std::experimental::suspend_point_handle<>);
-  void await_resume();
-};
-
 struct suspend_always {
   int stuff;
   bool await_ready();
@@ -48,11 +37,10 @@ struct suspend_always {
 template<>
 struct std::experimental::coroutine_traits<void> {
   struct promise_type {
-    void get_return_object();
-    init_susp initial_suspend();
-    final_susp final_suspend();
-    void return_void();
-    void unhandled_exception();
+    void get_return_object(std::experimental::suspend_point_handle<> h);
+    std::experimental::continuation_handle final_suspend(std::experimental::suspend_point_handle<> h);
+    void return_void() noexcept;
+    void unhandled_exception() noexcept;
   };
 };
 
@@ -122,9 +110,8 @@ struct suspend_maybe {
 template<>
 struct std::experimental::coroutine_traits<void,int> {
   struct promise_type {
-    void get_return_object();
-    init_susp initial_suspend();
-    final_susp final_suspend();
+    void get_return_object(std::experimental::suspend_point_handle<>);
+    std::experimental::continuation_handle final_suspend(std::experimental::suspend_point_handle<>);
     void return_void();
     suspend_maybe yield_value(int);
     void unhandled_exception();
@@ -299,9 +286,8 @@ struct AwaitResumeReturnsLValue {
 template<>
 struct std::experimental::coroutine_traits<void,double> {
   struct promise_type {
-    void get_return_object();
-    init_susp initial_suspend();
-    final_susp final_suspend();
+    void get_return_object(std::experimental::suspend_point_handle<std::experimental::with_resume> h);
+    std::experimental::continuation_handle final_suspend(std::experimental::suspend_point_handle<std::experimental::with_destroy> h);
     void return_void();
     AwaitResumeReturnsLValue yield_value(int);
     void unhandled_exception();
@@ -337,7 +323,7 @@ void AwaitReturnsLValue(double) {
 
 struct TailCallAwait {
   bool await_ready();
-  std::experimental::continuation_handle await_suspend(std::experimental::suspend_point_handle<>);
+  std::experimental::continuation_handle await_suspend(std::experimental::suspend_point_handle<std::experimental::with_resume> h);
   void await_resume();
 };
 

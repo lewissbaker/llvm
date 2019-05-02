@@ -103,14 +103,19 @@ public:
   _LIBCPP_INLINE_VISIBILITY
   void operator()() const {
     _LIBCPP_ASSERT(__execute_, "UB to invoke an invalid continuation");
-    __execute_(__handle_);
+    //__execute_(__handle_);
+    // HACK: Assume the only continuation is __builtin_coro_resume() for now.
+    __builtin_coro_resume(__handle_);
   }
 
+  // HACK: Compiler will assume that __execute_ is __builtin_coro_resume() and
+  // invoke it with result of __address() call.
   void* __address() const _NOEXCEPT { return __handle_; }
 
 private:
   friend with_set_done;
   friend with_resume;
+  friend continuation_handle noop_continuation() _NOEXCEPT;
 
   explicit continuation_handle(void* __handle, void (*__execute)(void*)) _NOEXCEPT
   : __handle_(__handle)
@@ -120,6 +125,12 @@ private:
   void* __handle_;
   void (*__execute_)(void*);
 };
+
+continuation_handle noop_continuation() _NOEXCEPT {
+  return continuation_handle{__builtin_coro_noop(), [](void* __handle) {
+    __builtin_coro_resume(__handle);
+  }};
+}
 
 class _LIBCPP_TYPE_VIS __suspend_point_handle_base {
 public:

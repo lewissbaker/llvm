@@ -557,7 +557,7 @@ static Expr *maybeTailCall(Sema &S, QualType RetType, Expr *E,
   if (!T->isClassType() && !T->isStructureType())
     return nullptr;
 
-  // FIXME: Add convertability check to coroutine_handle<>. Possibly via
+  // FIXME: Add convertability check to continuation_handle. Possibly via
   // EvaluateBinaryTypeTrait(BTT_IsConvertible, ...) which is at the moment
   // a private function in SemaExprCXX.cpp
 
@@ -786,43 +786,50 @@ bool Sema::ActOnCoroutineBodyStart(Scope *SC, SourceLocation KWLoc,
 
   // If we have existing coroutine statements then we have already built
   // the initial and final suspend points.
-  if (!ScopeInfo->NeedsCoroutineSuspends)
+  if (!ScopeInfo->NeedsCoroutineSuspend)
     return true;
 
-  ScopeInfo->setNeedsCoroutineSuspends(false);
+  ScopeInfo->setNeedsCoroutineSuspend(false);
 
   auto *Fn = cast<FunctionDecl>(CurContext);
   SourceLocation Loc = Fn->getLocation();
+
   // Build the initial suspend point
-  auto buildSuspends = [&](StringRef Name) mutable -> StmtResult {
+  auto buildFinalSuspend = [&]() -> StmtResult {
+    QualType PromiseType = ScopeInfo->CoroutinePromise->getType();
+    ExprResult SuspendPointHandle =
+        buildSuspendPointHandle(*this, PromiseType,
+                                true /* CanResume */, true /* CanDestroy */,
+                                Loc);
+    if (SuspendPointHandle.isInvalid())
+      return StmtError();
+    Expr* SuspendPointHandleExpr = SuspendPointHandle.get();
+
     ExprResult Suspend =
-        buildPromiseCall(*this, ScopeInfo->CoroutinePromise, Loc, Name, None);
+        buildPromiseCall(*this, ScopeInfo->CoroutinePromise, Loc,
+                         "final_suspend", SuspendPointHandleExpr);
     if (Suspend.isInvalid())
       return StmtError();
-    Suspend = buildOperatorCoawaitCall(*this, SC, Loc, Suspend.get());
-    if (Suspend.isInvalid())
-      return StmtError();
-    Suspend = BuildResolvedCoawaitExpr(Loc, Suspend.get(),
-                                       /*IsImplicit*/ true);
-    Suspend = ActOnFinishFullExpr(Suspend.get(), /*DiscardedValue*/ false);
+
+    Expr* FinalSuspendTailCallExpr =
+      maybeTailCall(*this, Suspend.get()->getType(), Suspend.get(), Loc);
+
+    // TODO: Check that return-type of final_suspend() is a continuation_handle.
+
+    Suspend = ActOnFinishFullExpr(FinalSuspendTailCallExpr, /*DiscardedValue*/ false);
     if (Suspend.isInvalid()) {
-      Diag(Loc, diag::note_coroutine_promise_suspend_implicitly_required)
-          << ((Name == "initial_suspend") ? 0 : 1);
+      Diag(Loc, diag::note_coroutine_promise_final_suspend_implicitly_required);
       Diag(KWLoc, diag::note_declared_coroutine_here) << Keyword;
       return StmtError();
     }
     return cast<Stmt>(Suspend.get());
   };
 
-  StmtResult InitSuspend = buildSuspends("initial_suspend");
-  if (InitSuspend.isInvalid())
-    return true;
-
-  StmtResult FinalSuspend = buildSuspends("final_suspend");
+  StmtResult FinalSuspend = buildFinalSuspend();
   if (FinalSuspend.isInvalid())
     return true;
 
-  ScopeInfo->setCoroutineSuspends(InitSuspend.get(), FinalSuspend.get());
+  ScopeInfo->setCoroutineFinalSuspend(FinalSuspend.get());
 
   return true;
 }
@@ -1187,13 +1194,12 @@ CoroutineStmtBuilder::CoroutineStmtBuilder(Sema &S, FunctionDecl &FD,
     PromiseRecordDecl = Fn.CoroutinePromise->getType()->getAsCXXRecordDecl();
     assert(PromiseRecordDecl && "Type should have already been checked");
   }
-  this->IsValid = makePromiseStmt() && makeInitialAndFinalSuspend();
+  this->IsValid = makePromiseStmt() && makeFinalSuspend();
 }
 
 bool CoroutineStmtBuilder::buildStatements() {
   assert(this->IsValid && "coroutine already invalid");
-  this->IsValid = makeReturnObject();
-  if (this->IsValid && !IsPromiseDependentType)
+  if (!IsPromiseDependentType)
     buildDependentStatements();
   return this->IsValid;
 }
@@ -1202,7 +1208,7 @@ bool CoroutineStmtBuilder::buildDependentStatements() {
   assert(this->IsValid && "coroutine already invalid");
   assert(!this->IsPromiseDependentType &&
          "coroutine cannot have a dependent promise type");
-  this->IsValid = makeOnException() && makeOnFallthrough() &&
+  this->IsValid = makeReturnObject() && makeOnException() && makeOnFallthrough() &&
                   makeGroDeclAndReturnStmt() && makeReturnOnAllocFailure() &&
                   makeNewAndDeleteExpr();
   return this->IsValid;
@@ -1220,11 +1226,10 @@ bool CoroutineStmtBuilder::makePromiseStmt() {
   return true;
 }
 
-bool CoroutineStmtBuilder::makeInitialAndFinalSuspend() {
-  if (Fn.hasInvalidCoroutineSuspends())
+bool CoroutineStmtBuilder::makeFinalSuspend() {
+  if (Fn.hasInvalidCoroutineSuspend())
     return false;
-  this->InitialSuspend = cast<Expr>(Fn.CoroutineSuspends.first);
-  this->FinalSuspend = cast<Expr>(Fn.CoroutineSuspends.second);
+  this->FinalSuspend = cast<Expr>(Fn.CoroutineFinalSuspend);
   return true;
 }
 
@@ -1574,8 +1579,18 @@ bool CoroutineStmtBuilder::makeOnException() {
 bool CoroutineStmtBuilder::makeReturnObject() {
   // Build implicit 'p.get_return_object()' expression and form initialization
   // of return type from it.
+  QualType PromiseType = Fn.CoroutinePromise->getType();
+
+  ExprResult SuspendPointHandle =
+      buildSuspendPointHandle(S, PromiseType, true /* CanResume */,
+                              true /* CanDestroy */, Loc);
+  if (SuspendPointHandle.isInvalid())
+    return false;
+
+  Expr* SuspendPointHandleExpr = SuspendPointHandle.get();
   ExprResult ReturnObject =
-      buildPromiseCall(S, Fn.CoroutinePromise, Loc, "get_return_object", None);
+      buildPromiseCall(S, Fn.CoroutinePromise, Loc, "get_return_object",
+                       SuspendPointHandleExpr);
   if (ReturnObject.isInvalid())
     return false;
 
@@ -1598,77 +1613,83 @@ bool CoroutineStmtBuilder::makeGroDeclAndReturnStmt() {
          "cannot make statement while the promise type is dependent");
   assert(this->ReturnValue && "ReturnValue must be already formed");
 
-  QualType const GroType = this->ReturnValue->getType();
-  assert(!GroType->isDependentType() &&
-         "get_return_object type must no longer be dependent");
+  // QualType const GroType = this->ReturnValue->getType();
+  // assert(!GroType->isDependentType() &&
+  //        "get_return_object type must no longer be dependent");
+  //
+  // QualType const FnRetType = FD.getReturnType();
+  // assert(!FnRetType->isDependentType() &&
+  //        "coroutine return type must no longer be dependent");
 
-  QualType const FnRetType = FD.getReturnType();
-  assert(!FnRetType->isDependentType() &&
-         "get_return_object type must no longer be dependent");
+  // if (FnRetType->isVoidType()) {
+  //   ExprResult Res =
+  //       S.ActOnFinishFullExpr(this->ReturnValue, Loc, /*DiscardedValue*/ true);
+  //   if (Res.isInvalid())
+  //     return false;
+  //
+  //   //this->ResultDecl = Res.get();
+  //   return true;
+  // }
+  //
+  // if (GroType->isVoidType()) {
+  //   // Trigger a nice error message.
+  //   InitializedEntity Entity =
+  //       InitializedEntity::InitializeResult(Loc, FnRetType, false);
+  //   S.PerformMoveOrCopyInitialization(Entity, nullptr, FnRetType, ReturnValue);
+  //   noteMemberDeclaredHere(S, ReturnValue, Fn);
+  //   return false;
+  // }
 
-  if (FnRetType->isVoidType()) {
-    ExprResult Res =
-        S.ActOnFinishFullExpr(this->ReturnValue, Loc, /*DiscardedValue*/ false);
-    if (Res.isInvalid())
-      return false;
+  // auto *GroDecl = VarDecl::Create(
+  //     S.Context, &FD, FD.getLocation(), FD.getLocation(),
+  //     &S.PP.getIdentifierTable().get("__coro_gro"), GroType,
+  //     S.Context.getTrivialTypeSourceInfo(GroType, Loc), SC_None);
 
-    this->ResultDecl = Res.get();
-    return true;
-  }
+  // S.CheckVariableDeclarationType(GroDecl);
+  // if (GroDecl->isInvalidDecl())
+  //   return false;
 
-  if (GroType->isVoidType()) {
-    // Trigger a nice error message.
-    InitializedEntity Entity =
-        InitializedEntity::InitializeResult(Loc, FnRetType, false);
-    S.PerformMoveOrCopyInitialization(Entity, nullptr, FnRetType, ReturnValue);
-    noteMemberDeclaredHere(S, ReturnValue, Fn);
-    return false;
-  }
+  // InitializedEntity Entity = InitializedEntity::InitializeVariable(GroDecl);
+  // ExprResult Res = S.PerformMoveOrCopyInitialization(Entity, nullptr, GroType,
+  //                                                    this->ReturnValue);
+  // if (Res.isInvalid())
+  //   return false;
+  //
+  // Res = S.ActOnFinishFullExpr(Res.get(), /*DiscardedValue*/ false);
+  // if (Res.isInvalid())
+  //   return false;
+  //
+  // S.AddInitializerToDecl(GroDecl, Res.get(),
+  //                        /*DirectInit=*/false);
 
-  auto *GroDecl = VarDecl::Create(
-      S.Context, &FD, FD.getLocation(), FD.getLocation(),
-      &S.PP.getIdentifierTable().get("__coro_gro"), GroType,
-      S.Context.getTrivialTypeSourceInfo(GroType, Loc), SC_None);
-
-  S.CheckVariableDeclarationType(GroDecl);
-  if (GroDecl->isInvalidDecl())
-    return false;
-
-  InitializedEntity Entity = InitializedEntity::InitializeVariable(GroDecl);
-  ExprResult Res = S.PerformMoveOrCopyInitialization(Entity, nullptr, GroType,
-                                                     this->ReturnValue);
-  if (Res.isInvalid())
-    return false;
-
-  Res = S.ActOnFinishFullExpr(Res.get(), /*DiscardedValue*/ false);
-  if (Res.isInvalid())
-    return false;
-
-  S.AddInitializerToDecl(GroDecl, Res.get(),
-                         /*DirectInit=*/false);
-
-  S.FinalizeDeclaration(GroDecl);
+  // S.FinalizeDeclaration(GroDecl);
 
   // Form a declaration statement for the return declaration, so that AST
   // visitors can more easily find it.
-  StmtResult GroDeclStmt =
-      S.ActOnDeclStmt(S.ConvertDeclToDeclGroup(GroDecl), Loc, Loc);
-  if (GroDeclStmt.isInvalid())
-    return false;
+  // StmtResult GroDeclStmt =
+  //     S.ActOnDeclStmt(S.ConvertDeclToDeclGroup(GroDecl), Loc, Loc);
+  // if (GroDeclStmt.isInvalid())
+  //   return false;
+  //
+  // this->ResultDecl = GroDeclStmt.get();
 
-  this->ResultDecl = GroDeclStmt.get();
+  // ExprResult declRef = S.BuildDeclRefExpr(GroDecl, GroType, VK_LValue, Loc);
+  // if (declRef.isInvalid())
+  //   return false;
 
-  ExprResult declRef = S.BuildDeclRefExpr(GroDecl, GroType, VK_LValue, Loc);
-  if (declRef.isInvalid())
-    return false;
-
-  StmtResult ReturnStmt = S.BuildReturnStmt(Loc, declRef.get());
+  StmtResult ReturnStmt = S.BuildReturnStmt(Loc, this->ReturnValue);
   if (ReturnStmt.isInvalid()) {
-    noteMemberDeclaredHere(S, ReturnValue, Fn);
+    noteMemberDeclaredHere(S, this->ReturnValue, Fn);
     return false;
   }
-  if (cast<clang::ReturnStmt>(ReturnStmt.get())->getNRVOCandidate() == GroDecl)
-    GroDecl->setNRVOVariable(true);
+  // if (cast<clang::ReturnStmt>(ReturnStmt.get())->getNRVOCandidate() == GroDecl)
+  //   GroDecl->setNRVOVariable(true);
+
+  ReturnStmt = S.ActOnFinishFullStmt(ReturnStmt.get());
+  if (ReturnStmt.isInvalid()) {
+    noteMemberDeclaredHere(S, this->ReturnValue, Fn);
+    return false;
+  }
 
   this->ReturnStmt = ReturnStmt.get();
   return true;

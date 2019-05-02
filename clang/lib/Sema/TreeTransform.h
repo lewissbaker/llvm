@@ -7091,15 +7091,14 @@ StmtResult
 TreeTransform<Derived>::TransformCoroutineBodyStmt(CoroutineBodyStmt *S) {
   auto *ScopeInfo = SemaRef.getCurFunction();
   auto *FD = cast<FunctionDecl>(SemaRef.CurContext);
-  assert(FD && ScopeInfo && !ScopeInfo->CoroutinePromise &&
-         ScopeInfo->NeedsCoroutineSuspends &&
-         ScopeInfo->CoroutineSuspends.first == nullptr &&
-         ScopeInfo->CoroutineSuspends.second == nullptr &&
+  assert(FD && ScopeInfo && ScopeInfo->CoroutinePromise == nullptr &&
+         ScopeInfo->NeedsCoroutineSuspend &&
+         ScopeInfo->CoroutineFinalSuspend == nullptr &&
          "expected clean scope info");
 
   // Set that we have (possibly-invalid) suspend points before we do anything
   // that may fail.
-  ScopeInfo->setNeedsCoroutineSuspends(false);
+  ScopeInfo->setNeedsCoroutineSuspend(false);
 
   // The new CoroutinePromise object needs to be built and put into the current
   // FunctionScopeInfo before any transformations or rebuilding occurs.
@@ -7113,15 +7112,12 @@ TreeTransform<Derived>::TransformCoroutineBodyStmt(CoroutineBodyStmt *S) {
 
   // Transform the implicit coroutine statements we built during the initial
   // parse.
-  StmtResult InitSuspend = getDerived().TransformStmt(S->getInitSuspendStmt());
-  if (InitSuspend.isInvalid())
-    return StmtError();
   StmtResult FinalSuspend =
       getDerived().TransformStmt(S->getFinalSuspendStmt());
   if (FinalSuspend.isInvalid())
     return StmtError();
-  ScopeInfo->setCoroutineSuspends(InitSuspend.get(), FinalSuspend.get());
-  assert(isa<Expr>(InitSuspend.get()) && isa<Expr>(FinalSuspend.get()));
+  ScopeInfo->setCoroutineFinalSuspend(FinalSuspend.get());
+  assert(isa<Expr>(FinalSuspend.get()));
 
   StmtResult BodyRes = getDerived().TransformStmt(S->getBody());
   if (BodyRes.isInvalid())
@@ -7131,13 +7127,13 @@ TreeTransform<Derived>::TransformCoroutineBodyStmt(CoroutineBodyStmt *S) {
   if (Builder.isInvalid())
     return StmtError();
 
-  Expr *ReturnObject = S->getReturnValueInit();
-  assert(ReturnObject && "the return object is expected to be valid");
-  ExprResult Res = getDerived().TransformInitializer(ReturnObject,
-                                                     /*NoCopyInit*/ false);
-  if (Res.isInvalid())
-    return StmtError();
-  Builder.ReturnValue = Res.get();
+  // Expr *ReturnObject = S->getReturnValueInit();
+  // assert(ReturnObject && "the return object is expected to be valid");
+  // ExprResult Res = getDerived().TransformInitializer(ReturnObject,
+  //                                                    /*NoCopyInit*/ false);
+  // if (Res.isInvalid())
+  //   return StmtError();
+  // Builder.ReturnValue = Res.get();
 
   if (S->hasDependentPromiseType()) {
     assert(!Promise->getType()->isDependentType() &&
@@ -7182,11 +7178,11 @@ TreeTransform<Derived>::TransformCoroutineBodyStmt(CoroutineBodyStmt *S) {
       return StmtError();
     Builder.Deallocate = DeallocRes.get();
 
-    assert(S->getResultDecl() && "ResultDecl must already be built");
-    StmtResult ResultDecl = getDerived().TransformStmt(S->getResultDecl());
-    if (ResultDecl.isInvalid())
-      return StmtError();
-    Builder.ResultDecl = ResultDecl.get();
+    // assert(S->getResultDecl() && "ResultDecl must already be built");
+    // StmtResult ResultDecl = getDerived().TransformStmt(S->getResultDecl());
+    // if (ResultDecl.isInvalid())
+    //   return StmtError();
+    // Builder.ResultDecl = ResultDecl.get();
 
     if (auto *ReturnStmt = S->getReturnStmt()) {
       StmtResult Res = getDerived().TransformStmt(ReturnStmt);

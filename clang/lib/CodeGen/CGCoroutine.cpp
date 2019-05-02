@@ -23,16 +23,15 @@ using llvm::Value;
 using llvm::BasicBlock;
 
 namespace {
-enum class AwaitKind { Init, Normal, Yield, Final };
-static constexpr llvm::StringLiteral AwaitKindStr[] = {"init", "await", "yield",
-                                                       "final"};
+enum class AwaitKind { Normal, Yield };
+static constexpr llvm::StringLiteral AwaitKindStr[] = {"await", "yield"};
 }
 
 struct clang::CodeGen::CGCoroData {
   // What is the current await expression kind and how many
   // await/yield expressions were encountered so far.
   // These are used to generate pretty labels for await expressions in LLVM IR.
-  AwaitKind CurrentAwaitKind = AwaitKind::Init;
+  //AwaitKind CurrentAwaitKind = AwaitKind::Normal;
   unsigned AwaitNum = 0;
   unsigned YieldNum = 0;
 
@@ -112,9 +111,6 @@ static void createCoroData(CodeGenFunction &CGF,
 static SmallString<32> buildSuspendPrefixStr(CGCoroData &Coro, AwaitKind Kind) {
   unsigned No = 0;
   switch (Kind) {
-  case AwaitKind::Init:
-  case AwaitKind::Final:
-    break;
   case AwaitKind::Normal:
     No = ++Coro.AwaitNum;
     break;
@@ -209,7 +205,7 @@ static LValueOrRValue emitSuspendExpression(CodeGenFunction &CGF, CGCoroData &Co
   }
 
   // Emit the suspend point.
-  const bool IsFinalSuspend = (Kind == AwaitKind::Final);
+  const bool IsFinalSuspend = false; //(Kind == AwaitKind::Final);
   llvm::Function *CoroSuspend =
       CGF.CGM.getIntrinsic(llvm::Intrinsic::coro_suspend);
   auto *SuspendResult = Builder.CreateCall(
@@ -229,21 +225,21 @@ static LValueOrRValue emitSuspendExpression(CodeGenFunction &CGF, CGCoroData &Co
 
   // Exception handling requires additional IR. If the 'await_resume' function
   // is marked as 'noexcept', we avoid generating this additional IR.
-  CXXTryStmt *TryStmt = nullptr;
-  if (Coro.ExceptionHandler && Kind == AwaitKind::Init &&
-      memberCallExpressionCanThrow(S.getResumeExpr())) {
-    Coro.ResumeEHVar =
-        CGF.CreateTempAlloca(Builder.getInt1Ty(), Prefix + Twine("resume.eh"));
-    Builder.CreateFlagStore(true, Coro.ResumeEHVar);
-
-    auto Loc = S.getResumeExpr()->getExprLoc();
-    auto *Catch = new (CGF.getContext())
-        CXXCatchStmt(Loc, /*exDecl=*/nullptr, Coro.ExceptionHandler);
-    auto *TryBody =
-        CompoundStmt::Create(CGF.getContext(), S.getResumeExpr(), Loc, Loc);
-    TryStmt = CXXTryStmt::Create(CGF.getContext(), Loc, TryBody, Catch);
-    CGF.EnterCXXTryStmt(*TryStmt);
-  }
+  // CXXTryStmt *TryStmt = nullptr;
+  // if (Coro.ExceptionHandler && Kind == AwaitKind::Init &&
+  //     memberCallExpressionCanThrow(S.getResumeExpr())) {
+  //   Coro.ResumeEHVar =
+  //       CGF.CreateTempAlloca(Builder.getInt1Ty(), Prefix + Twine("resume.eh"));
+  //   Builder.CreateFlagStore(true, Coro.ResumeEHVar);
+  //
+  //   auto Loc = S.getResumeExpr()->getExprLoc();
+  //   auto *Catch = new (CGF.getContext())
+  //       CXXCatchStmt(Loc, /*exDecl=*/nullptr, Coro.ExceptionHandler);
+  //   auto *TryBody =
+  //       CompoundStmt::Create(CGF.getContext(), S.getResumeExpr(), Loc, Loc);
+  //   TryStmt = CXXTryStmt::Create(CGF.getContext(), Loc, TryBody, Catch);
+  //   CGF.EnterCXXTryStmt(*TryStmt);
+  // }
 
   LValueOrRValue Res;
   if (forLValue)
@@ -251,10 +247,10 @@ static LValueOrRValue emitSuspendExpression(CodeGenFunction &CGF, CGCoroData &Co
   else
     Res.RV = CGF.EmitAnyExpr(S.getResumeExpr(), aggSlot, ignoreResult);
 
-  if (TryStmt) {
-    Builder.CreateFlagStore(false, Coro.ResumeEHVar);
-    CGF.ExitCXXTryStmt(*TryStmt);
-  }
+  // if (TryStmt) {
+  //   Builder.CreateFlagStore(false, Coro.ResumeEHVar);
+  //   CGF.ExitCXXTryStmt(*TryStmt);
+  // }
 
   return Res;
 }
@@ -263,7 +259,7 @@ RValue CodeGenFunction::EmitCoawaitExpr(const CoawaitExpr &E,
                                         AggValueSlot aggSlot,
                                         bool ignoreResult) {
   return emitSuspendExpression(*this, *CurCoro.Data, E,
-                               CurCoro.Data->CurrentAwaitKind, aggSlot,
+                               AwaitKind::Normal, aggSlot,
                                ignoreResult, /*forLValue*/false).RV;
 }
 RValue CodeGenFunction::EmitCoyieldExpr(const CoyieldExpr &E,
@@ -304,7 +300,7 @@ CodeGenFunction::EmitCoawaitLValue(const CoawaitExpr *E) {
          "Can't have a scalar return unless the return type is a "
          "reference type!");
   return emitSuspendExpression(*this, *CurCoro.Data, *E,
-                               CurCoro.Data->CurrentAwaitKind, AggValueSlot::ignored(),
+                               AwaitKind::Normal, AggValueSlot::ignored(),
                                /*ignoreResult*/false, /*forLValue*/true).LV;
 }
 
@@ -467,69 +463,69 @@ struct CallCoroDelete final : public EHScopeStack::Cleanup {
 }
 
 namespace {
-struct GetReturnObjectManager {
-  CodeGenFunction &CGF;
-  CGBuilderTy &Builder;
-  const CoroutineBodyStmt &S;
-
-  Address GroActiveFlag;
-  CodeGenFunction::AutoVarEmission GroEmission;
-
-  GetReturnObjectManager(CodeGenFunction &CGF, const CoroutineBodyStmt &S)
-      : CGF(CGF), Builder(CGF.Builder), S(S), GroActiveFlag(Address::invalid()),
-        GroEmission(CodeGenFunction::AutoVarEmission::invalid()) {}
-
-  // The gro variable has to outlive coroutine frame and coroutine promise, but,
-  // it can only be initialized after coroutine promise was created, thus, we
-  // split its emission in two parts. EmitGroAlloca emits an alloca and sets up
-  // cleanups. Later when coroutine promise is available we initialize the gro
-  // and sets the flag that the cleanup is now active.
-
-  void EmitGroAlloca() {
-    auto *GroDeclStmt = dyn_cast<DeclStmt>(S.getResultDecl());
-    if (!GroDeclStmt) {
-      // If get_return_object returns void, no need to do an alloca.
-      return;
-    }
-
-    auto *GroVarDecl = cast<VarDecl>(GroDeclStmt->getSingleDecl());
-
-    // Set GRO flag that it is not initialized yet
-    GroActiveFlag =
-      CGF.CreateTempAlloca(Builder.getInt1Ty(), CharUnits::One(), "gro.active");
-    Builder.CreateStore(Builder.getFalse(), GroActiveFlag);
-
-    GroEmission = CGF.EmitAutoVarAlloca(*GroVarDecl);
-
-    // Remember the top of EHStack before emitting the cleanup.
-    auto old_top = CGF.EHStack.stable_begin();
-    CGF.EmitAutoVarCleanups(GroEmission);
-    auto top = CGF.EHStack.stable_begin();
-
-    // Make the cleanup conditional on gro.active
-    for (auto b = CGF.EHStack.find(top), e = CGF.EHStack.find(old_top);
-      b != e; b++) {
-      if (auto *Cleanup = dyn_cast<EHCleanupScope>(&*b)) {
-        assert(!Cleanup->hasActiveFlag() && "cleanup already has active flag?");
-        Cleanup->setActiveFlag(GroActiveFlag);
-        Cleanup->setTestFlagInEHCleanup();
-        Cleanup->setTestFlagInNormalCleanup();
-      }
-    }
-  }
-
-  void EmitGroInit() {
-    if (!GroActiveFlag.isValid()) {
-      // No Gro variable was allocated. Simply emit the call to
-      // get_return_object.
-      CGF.EmitStmt(S.getResultDecl());
-      return;
-    }
-
-    CGF.EmitAutoVarInit(GroEmission);
-    Builder.CreateStore(Builder.getTrue(), GroActiveFlag);
-  }
-};
+// struct GetReturnObjectManager {
+//   CodeGenFunction &CGF;
+//   CGBuilderTy &Builder;
+//   const CoroutineBodyStmt &S;
+//
+//   Address GroActiveFlag;
+//   CodeGenFunction::AutoVarEmission GroEmission;
+//
+//   GetReturnObjectManager(CodeGenFunction &CGF, const CoroutineBodyStmt &S)
+//       : CGF(CGF), Builder(CGF.Builder), S(S), GroActiveFlag(Address::invalid()),
+//         GroEmission(CodeGenFunction::AutoVarEmission::invalid()) {}
+//
+//   // The gro variable has to outlive coroutine frame and coroutine promise, but,
+//   // it can only be initialized after coroutine promise was created, thus, we
+//   // split its emission in two parts. EmitGroAlloca emits an alloca and sets up
+//   // cleanups. Later when coroutine promise is available we initialize the gro
+//   // and sets the flag that the cleanup is now active.
+//
+//   void EmitGroAlloca() {
+//     auto *GroDeclStmt = dyn_cast<DeclStmt>(S.getResultDecl());
+//     if (!GroDeclStmt) {
+//       // If get_return_object returns void, no need to do an alloca.
+//       return;
+//     }
+//
+//     auto *GroVarDecl = cast<VarDecl>(GroDeclStmt->getSingleDecl());
+//
+//     // Set GRO flag that it is not initialized yet
+//     GroActiveFlag =
+//       CGF.CreateTempAlloca(Builder.getInt1Ty(), CharUnits::One(), "gro.active");
+//     Builder.CreateStore(Builder.getFalse(), GroActiveFlag);
+//
+//     GroEmission = CGF.EmitAutoVarAlloca(*GroVarDecl);
+//
+//     // Remember the top of EHStack before emitting the cleanup.
+//     auto old_top = CGF.EHStack.stable_begin();
+//     CGF.EmitAutoVarCleanups(GroEmission);
+//     auto top = CGF.EHStack.stable_begin();
+//
+//     // Make the cleanup conditional on gro.active
+//     for (auto b = CGF.EHStack.find(top), e = CGF.EHStack.find(old_top);
+//       b != e; b++) {
+//       if (auto *Cleanup = dyn_cast<EHCleanupScope>(&*b)) {
+//         assert(!Cleanup->hasActiveFlag() && "cleanup already has active flag?");
+//         Cleanup->setActiveFlag(GroActiveFlag);
+//         Cleanup->setTestFlagInEHCleanup();
+//         Cleanup->setTestFlagInNormalCleanup();
+//       }
+//     }
+//   }
+//
+//   void EmitGroInit() {
+//     if (!GroActiveFlag.isValid()) {
+//       // No Gro variable was allocated. Simply emit the call to
+//       // get_return_object.
+//       CGF.EmitStmt(S.getResultDecl());
+//       return;
+//     }
+//
+//     CGF.EmitAutoVarInit(GroEmission);
+//     Builder.CreateStore(Builder.getTrue(), GroActiveFlag);
+//   }
+// };
 }
 
 static void emitBodyAndFallthrough(CodeGenFunction &CGF,
@@ -596,8 +592,8 @@ void CodeGenFunction::EmitCoroutineBody(const CoroutineBodyStmt &S) {
       CGM.getIntrinsic(llvm::Intrinsic::coro_begin), {CoroId, Phi});
   CurCoro.Data->CoroBegin = CoroBegin;
 
-  GetReturnObjectManager GroManager(*this, S);
-  GroManager.EmitGroAlloca();
+  //GetReturnObjectManager GroManager(*this, S);
+  //GroManager.EmitGroAlloca();
 
   CurCoro.Data->CleanupJD = getJumpDestInCurrentScope(RetBB);
   {
@@ -626,16 +622,39 @@ void CodeGenFunction::EmitCoroutineBody(const CoroutineBodyStmt &S) {
     CoroId->setArgOperand(1, PromiseAddrVoidPtr);
 
     // Now we have the promise, initialize the GRO
-    GroManager.EmitGroInit();
+    //GroManager.EmitGroInit();
 
     EHStack.pushCleanup<CallCoroEnd>(EHCleanup);
 
-    CurCoro.Data->CurrentAwaitKind = AwaitKind::Init;
+    // Emit parts of emitSuspendExpression() to unconditionally suspend
+    // here. The call to promise.get_return_object(handle) will occur on the
+    // RetBB block after we suspend.
+    {
+      llvm::Function *CoroSave = CGM.getIntrinsic(llvm::Intrinsic::coro_save);
+      llvm::Function *CoroSuspend = CGM.getIntrinsic(llvm::Intrinsic::coro_suspend);
+      auto *BodyBB = createBasicBlock("init.ready");
+      auto *CleanupBB = createBasicBlock("init.cleanup");
+
+      auto *InitialSaveCall = Builder.CreateCall(CoroSave, {NullPtr});
+      auto *InitialSuspendResult = Builder.CreateCall(
+        CoroSuspend,
+        {InitialSaveCall, Builder.getInt1(false) /* IsFinalSuspend */});
+      auto *InitialSuspendSwitch = Builder.CreateSwitch(InitialSuspendResult, RetBB, 2);
+      InitialSuspendSwitch->addCase(Builder.getInt8(0), BodyBB); // Resume path.
+      InitialSuspendSwitch->addCase(Builder.getInt8(1), CleanupBB); // Destroy path.
+
+      EmitBlock(CleanupBB);
+      EmitBranchThroughCleanup(CurCoro.Data->CleanupJD);
+
+      EmitBlock(BodyBB);
+    }
+
+    //CurCoro.Data->CurrentAwaitKind = AwaitKind::Init;
     CurCoro.Data->ExceptionHandler = S.getExceptionHandler();
-    EmitStmt(S.getInitSuspendStmt());
+    //EmitStmt(S.getInitSuspendStmt());
     CurCoro.Data->FinalJD = getJumpDestInCurrentScope(FinalBB);
 
-    CurCoro.Data->CurrentAwaitKind = AwaitKind::Normal;
+    //CurCoro.Data->CurrentAwaitKind = AwaitKind::Normal;
 
     if (CurCoro.Data->ExceptionHandler) {
       // If we generated IR to record whether an exception was thrown from
@@ -643,15 +662,15 @@ void CodeGenFunction::EmitCoroutineBody(const CoroutineBodyStmt &S) {
       // body should be skipped.
       // If we didn't generate the IR (perhaps because 'await_resume' was marked
       // as 'noexcept'), then we skip this check.
-      BasicBlock *ContBB = nullptr;
-      if (CurCoro.Data->ResumeEHVar) {
-        BasicBlock *BodyBB = createBasicBlock("coro.resumed.body");
-        ContBB = createBasicBlock("coro.resumed.cont");
-        Value *SkipBody = Builder.CreateFlagLoad(CurCoro.Data->ResumeEHVar,
-                                                 "coro.resumed.eh");
-        Builder.CreateCondBr(SkipBody, ContBB, BodyBB);
-        EmitBlock(BodyBB);
-      }
+      // BasicBlock *ContBB = nullptr;
+      // if (CurCoro.Data->ResumeEHVar) {
+      //   BasicBlock *BodyBB = createBasicBlock("coro.resumed.body");
+      //   ContBB = createBasicBlock("coro.resumed.cont");
+      //   Value *SkipBody = Builder.CreateFlagLoad(CurCoro.Data->ResumeEHVar,
+      //                                            "coro.resumed.eh");
+      //   Builder.CreateCondBr(SkipBody, ContBB, BodyBB);
+      //   EmitBlock(BodyBB);
+      // }
 
       auto Loc = S.getBeginLoc();
       CXXCatchStmt Catch(Loc, /*exDecl=*/nullptr,
@@ -663,20 +682,34 @@ void CodeGenFunction::EmitCoroutineBody(const CoroutineBodyStmt &S) {
       emitBodyAndFallthrough(*this, S, TryStmt->getTryBlock());
       ExitCXXTryStmt(*TryStmt);
 
-      if (ContBB)
-        EmitBlock(ContBB);
+      // if (ContBB)
+      //   EmitBlock(ContBB);
     }
     else {
       emitBodyAndFallthrough(*this, S, S.getBody());
     }
 
     // See if we need to generate final suspend.
-    const bool CanFallthrough = Builder.GetInsertBlock();
+    const bool CanFallthrough = Builder.GetInsertBlock() != nullptr;
     const bool HasCoreturns = CurCoro.Data->CoreturnCount > 0;
     if (CanFallthrough || HasCoreturns) {
       EmitBlock(FinalBB);
-      CurCoro.Data->CurrentAwaitKind = AwaitKind::Final;
+      //CurCoro.Data->CurrentAwaitKind = AwaitKind::Final;
+
+      llvm::Function *CoroSave = CGM.getIntrinsic(llvm::Intrinsic::coro_save);
+      llvm::Function *CoroSuspend = CGM.getIntrinsic(llvm::Intrinsic::coro_suspend);
+      auto *CleanupBB = createBasicBlock("final.cleanup");
+
+      auto *FinalSaveCall = Builder.CreateCall(CoroSave, {NullPtr});
       EmitStmt(S.getFinalSuspendStmt());
+      auto *FinalSuspendResult = Builder.CreateCall(
+        CoroSuspend,
+        {FinalSaveCall, Builder.getInt1(true) /* IsFinalSuspend */});
+      auto *InitialSuspendSwitch = Builder.CreateSwitch(FinalSuspendResult, RetBB, 2);
+      InitialSuspendSwitch->addCase(Builder.getInt8(1), CleanupBB); // Destroy path.
+
+      EmitBlock(CleanupBB);
+      EmitBranchThroughCleanup(CurCoro.Data->CleanupJD);
     } else {
       // We don't need FinalBB. Emit it to make sure the block is deleted.
       EmitBlock(FinalBB, /*IsFinished=*/true);
@@ -689,8 +722,9 @@ void CodeGenFunction::EmitCoroutineBody(const CoroutineBodyStmt &S) {
   llvm::Function *CoroEnd = CGM.getIntrinsic(llvm::Intrinsic::coro_end);
   Builder.CreateCall(CoroEnd, {NullPtr, Builder.getFalse()});
 
-  if (Stmt *Ret = S.getReturnStmt())
-    EmitStmt(Ret);
+  Stmt *Ret = S.getReturnStmt();
+  assert(Ret != nullptr && "codegen function must have a return statement");
+  EmitStmt(Ret);
 }
 
 // Emit coroutine intrinsic and patch up arguments of the token type.
