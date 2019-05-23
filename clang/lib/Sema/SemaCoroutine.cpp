@@ -277,50 +277,6 @@ static QualType lookupSuspendPointHandleType(Sema &S, QualType PromiseType,
   return SuspendPointHandleType;
 }
 
-/// Look up the std::experimental::coroutine_handle<PromiseType>.
-static QualType lookupCoroutineHandleType(Sema &S, QualType PromiseType,
-                                          SourceLocation Loc) {
-  if (PromiseType.isNull())
-    return QualType();
-
-  NamespaceDecl *StdExp = S.lookupStdExperimentalNamespace();
-  assert(StdExp && "Should already be diagnosed");
-
-  LookupResult Result(S, &S.PP.getIdentifierTable().get("coroutine_handle"),
-                      Loc, Sema::LookupOrdinaryName);
-  if (!S.LookupQualifiedName(Result, StdExp)) {
-    S.Diag(Loc, diag::err_implied_coroutine_type_not_found)
-        << "std::experimental::coroutine_handle";
-    return QualType();
-  }
-
-  ClassTemplateDecl *CoroHandle = Result.getAsSingle<ClassTemplateDecl>();
-  if (!CoroHandle) {
-    Result.suppressDiagnostics();
-    // We found something weird. Complain about the first thing we found.
-    NamedDecl *Found = *Result.begin();
-    S.Diag(Found->getLocation(), diag::err_malformed_std_coroutine_handle);
-    return QualType();
-  }
-
-  // Form template argument list for coroutine_handle<Promise>.
-  TemplateArgumentListInfo Args(Loc, Loc);
-  Args.addArgument(TemplateArgumentLoc(
-      TemplateArgument(PromiseType),
-      S.Context.getTrivialTypeSourceInfo(PromiseType, Loc)));
-
-  // Build the template-id.
-  QualType CoroHandleType =
-      S.CheckTemplateIdType(TemplateName(CoroHandle), Loc, Args);
-  if (CoroHandleType.isNull())
-    return QualType();
-  if (S.RequireCompleteType(Loc, CoroHandleType,
-                            diag::err_coroutine_type_missing_specialization))
-    return QualType();
-
-  return CoroHandleType;
-}
-
 static bool isValidCoroutineContext(Sema &S, SourceLocation Loc,
                                     StringRef Keyword) {
   // [expr.await]p2 dictates that 'co_await' and 'co_yield' must be used within
@@ -471,33 +427,6 @@ static ExprResult buildSuspendPointHandle(Sema &S, QualType PromiseType,
   if (!S.LookupQualifiedName(Found, LookupCtx)) {
     S.Diag(Loc, diag::err_coroutine_handle_missing_member)
         << "__from_address";
-    return ExprError();
-  }
-
-  Expr *FramePtr =
-      buildBuiltinCall(S, Loc, Builtin::BI__builtin_coro_frame, {});
-
-  CXXScopeSpec SS;
-  ExprResult FromAddr =
-      S.BuildDeclarationNameExpr(SS, Found, /*NeedsADL=*/false);
-  if (FromAddr.isInvalid())
-    return ExprError();
-
-  return S.ActOnCallExpr(nullptr, FromAddr.get(), Loc, FramePtr, Loc);
-}
-
-static ExprResult buildCoroutineHandle(Sema &S, QualType PromiseType,
-                                       SourceLocation Loc) {
-  QualType CoroHandleType = lookupCoroutineHandleType(S, PromiseType, Loc);
-  if (CoroHandleType.isNull())
-    return ExprError();
-
-  DeclContext *LookupCtx = S.computeDeclContext(CoroHandleType);
-  LookupResult Found(S, &S.PP.getIdentifierTable().get("from_address"), Loc,
-                     Sema::LookupOrdinaryName);
-  if (!S.LookupQualifiedName(Found, LookupCtx)) {
-    S.Diag(Loc, diag::err_coroutine_handle_missing_member)
-        << "from_address";
     return ExprError();
   }
 
@@ -794,20 +723,11 @@ bool Sema::ActOnCoroutineBodyStart(Scope *SC, SourceLocation KWLoc,
   auto *Fn = cast<FunctionDecl>(CurContext);
   SourceLocation Loc = Fn->getLocation();
 
-  // Build the initial suspend point
+  // Build the final suspend point
   auto buildFinalSuspend = [&]() -> StmtResult {
-    QualType PromiseType = ScopeInfo->CoroutinePromise->getType();
-    ExprResult SuspendPointHandle =
-        buildSuspendPointHandle(*this, PromiseType,
-                                true /* CanResume */, true /* CanDestroy */,
-                                Loc);
-    if (SuspendPointHandle.isInvalid())
-      return StmtError();
-    Expr* SuspendPointHandleExpr = SuspendPointHandle.get();
-
     ExprResult Suspend =
         buildPromiseCall(*this, ScopeInfo->CoroutinePromise, Loc,
-                         "final_suspend", SuspendPointHandleExpr);
+                         "final_suspend", None);
     if (Suspend.isInvalid())
       return StmtError();
 

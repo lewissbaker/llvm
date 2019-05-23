@@ -38,7 +38,7 @@ template<>
 struct std::experimental::coroutine_traits<void> {
   struct promise_type {
     void get_return_object(std::experimental::suspend_point_handle<> h);
-    std::experimental::continuation_handle final_suspend(std::experimental::suspend_point_handle<> h);
+    std::experimental::continuation_handle final_suspend();
     void return_void() noexcept;
     void unhandled_exception() noexcept;
   };
@@ -111,7 +111,7 @@ template<>
 struct std::experimental::coroutine_traits<void,int> {
   struct promise_type {
     void get_return_object(std::experimental::suspend_point_handle<>);
-    std::experimental::continuation_handle final_suspend(std::experimental::suspend_point_handle<>);
+    std::experimental::continuation_handle final_suspend();
     void return_void();
     suspend_maybe yield_value(int);
     void unhandled_exception();
@@ -287,7 +287,7 @@ template<>
 struct std::experimental::coroutine_traits<void,double> {
   struct promise_type {
     void get_return_object(std::experimental::suspend_point_handle<std::experimental::with_resume> h);
-    std::experimental::continuation_handle final_suspend(std::experimental::suspend_point_handle<std::experimental::with_destroy> h);
+    std::experimental::continuation_handle final_suspend();
     void return_void();
     AwaitResumeReturnsLValue yield_value(int);
     void unhandled_exception();

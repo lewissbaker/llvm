@@ -205,7 +205,7 @@ static LValueOrRValue emitSuspendExpression(CodeGenFunction &CGF, CGCoroData &Co
   }
 
   // Emit the suspend point.
-  const bool IsFinalSuspend = false; //(Kind == AwaitKind::Final);
+  const bool IsFinalSuspend = false;
   llvm::Function *CoroSuspend =
       CGF.CGM.getIntrinsic(llvm::Intrinsic::coro_suspend);
   auto *SuspendResult = Builder.CreateCall(
@@ -440,7 +440,7 @@ struct CallCoroDelete final : public EHScopeStack::Cleanup {
     auto *CoroFree = CGF.CurCoro.Data->LastCoroFree;
     if (!CoroFree) {
       CGF.CGM.Error(Deallocate->getBeginLoc(),
-                    "Deallocation expressoin does not refer to coro.free");
+                    "Deallocation expression does not refer to coro.free");
       return;
     }
 
@@ -592,9 +592,6 @@ void CodeGenFunction::EmitCoroutineBody(const CoroutineBodyStmt &S) {
       CGM.getIntrinsic(llvm::Intrinsic::coro_begin), {CoroId, Phi});
   CurCoro.Data->CoroBegin = CoroBegin;
 
-  //GetReturnObjectManager GroManager(*this, S);
-  //GroManager.EmitGroAlloca();
-
   CurCoro.Data->CleanupJD = getJumpDestInCurrentScope(RetBB);
   {
     ParamReferenceReplacerRAII ParamReplacer(LocalDeclMap);
@@ -621,9 +618,6 @@ void CodeGenFunction::EmitCoroutineBody(const CoroutineBodyStmt &S) {
     // promise local variable was not emitted yet.
     CoroId->setArgOperand(1, PromiseAddrVoidPtr);
 
-    // Now we have the promise, initialize the GRO
-    //GroManager.EmitGroInit();
-
     EHStack.pushCleanup<CallCoroEnd>(EHCleanup);
 
     // Emit parts of emitSuspendExpression() to unconditionally suspend
@@ -649,29 +643,10 @@ void CodeGenFunction::EmitCoroutineBody(const CoroutineBodyStmt &S) {
       EmitBlock(BodyBB);
     }
 
-    //CurCoro.Data->CurrentAwaitKind = AwaitKind::Init;
     CurCoro.Data->ExceptionHandler = S.getExceptionHandler();
-    //EmitStmt(S.getInitSuspendStmt());
     CurCoro.Data->FinalJD = getJumpDestInCurrentScope(FinalBB);
 
-    //CurCoro.Data->CurrentAwaitKind = AwaitKind::Normal;
-
     if (CurCoro.Data->ExceptionHandler) {
-      // If we generated IR to record whether an exception was thrown from
-      // 'await_resume', then use that IR to determine whether the coroutine
-      // body should be skipped.
-      // If we didn't generate the IR (perhaps because 'await_resume' was marked
-      // as 'noexcept'), then we skip this check.
-      // BasicBlock *ContBB = nullptr;
-      // if (CurCoro.Data->ResumeEHVar) {
-      //   BasicBlock *BodyBB = createBasicBlock("coro.resumed.body");
-      //   ContBB = createBasicBlock("coro.resumed.cont");
-      //   Value *SkipBody = Builder.CreateFlagLoad(CurCoro.Data->ResumeEHVar,
-      //                                            "coro.resumed.eh");
-      //   Builder.CreateCondBr(SkipBody, ContBB, BodyBB);
-      //   EmitBlock(BodyBB);
-      // }
-
       auto Loc = S.getBeginLoc();
       CXXCatchStmt Catch(Loc, /*exDecl=*/nullptr,
                          CurCoro.Data->ExceptionHandler);
@@ -681,11 +656,7 @@ void CodeGenFunction::EmitCoroutineBody(const CoroutineBodyStmt &S) {
       EnterCXXTryStmt(*TryStmt);
       emitBodyAndFallthrough(*this, S, TryStmt->getTryBlock());
       ExitCXXTryStmt(*TryStmt);
-
-      // if (ContBB)
-      //   EmitBlock(ContBB);
-    }
-    else {
+    } else {
       emitBodyAndFallthrough(*this, S, S.getBody());
     }
 
@@ -694,7 +665,6 @@ void CodeGenFunction::EmitCoroutineBody(const CoroutineBodyStmt &S) {
     const bool HasCoreturns = CurCoro.Data->CoreturnCount > 0;
     if (CanFallthrough || HasCoreturns) {
       EmitBlock(FinalBB);
-      //CurCoro.Data->CurrentAwaitKind = AwaitKind::Final;
 
       llvm::Function *CoroSave = CGM.getIntrinsic(llvm::Intrinsic::coro_save);
       llvm::Function *CoroSuspend = CGM.getIntrinsic(llvm::Intrinsic::coro_suspend);
@@ -717,6 +687,7 @@ void CodeGenFunction::EmitCoroutineBody(const CoroutineBodyStmt &S) {
   }
 
   EmitBlock(RetBB);
+
   // Emit coro.end before getReturnStmt (and parameter destructors), since
   // resume and destroy parts of the coroutine should not include them.
   llvm::Function *CoroEnd = CGM.getIntrinsic(llvm::Intrinsic::coro_end);
