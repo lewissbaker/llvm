@@ -532,9 +532,14 @@ static void emitBodyAndFallthrough(CodeGenFunction &CGF,
                                    const CoroutineBodyStmt &S, Stmt *Body) {
   CGF.EmitStmt(Body);
   const bool CanFallthrough = CGF.Builder.GetInsertBlock();
-  if (CanFallthrough)
-    if (Stmt *OnFallthrough = S.getFallthroughHandler())
+  if (CanFallthrough) {
+    if (Stmt *OnFallthrough = S.getFallthroughHandler()) {
       CGF.EmitStmt(OnFallthrough);
+    } else {
+      CGF.EmitUnreachable(S.getEndLoc());
+      CGF.Builder.ClearInsertionPoint();
+    }
+  }
 }
 
 void CodeGenFunction::EmitCoroutineBody(const CoroutineBodyStmt &S) {
