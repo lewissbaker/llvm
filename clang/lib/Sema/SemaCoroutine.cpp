@@ -1417,19 +1417,7 @@ bool CoroutineStmtBuilder::makeOnFallthrough() {
       lookupMember(S, "return_value", PromiseRecordDecl, Loc, HasRValue);
 
   StmtResult Fallthrough;
-  if (HasRVoid && HasRValue) {
-    // FIXME Improve this diagnostic
-    S.Diag(FD.getLocation(),
-           diag::err_coroutine_promise_incompatible_return_functions)
-        << PromiseRecordDecl;
-    S.Diag(LRVoid.getRepresentativeDecl()->getLocation(),
-           diag::note_member_first_declared_here)
-        << LRVoid.getLookupName();
-    S.Diag(LRValue.getRepresentativeDecl()->getLocation(),
-           diag::note_member_first_declared_here)
-        << LRValue.getLookupName();
-    return false;
-  } else if (!HasRVoid && !HasRValue) {
+  if (!HasRVoid && !HasRValue) {
     // FIXME: The PDTS currently specifies this case as UB, not ill-formed.
     // However we still diagnose this as an error since until the PDTS is fixed.
     S.Diag(FD.getLocation(),
@@ -1439,14 +1427,19 @@ bool CoroutineStmtBuilder::makeOnFallthrough() {
         << PromiseRecordDecl;
     return false;
   } else if (HasRVoid) {
-    // If the unqualified-id return_void is found, flowing off the end of a
-    // coroutine is equivalent to a co_return with no operand. Otherwise,
-    // flowing off the end of a coroutine results in undefined behavior.
-    Fallthrough = S.BuildCoreturnStmt(FD.getLocation(), nullptr,
-                                      /*IsImplicit*/false);
-    Fallthrough = S.ActOnFinishFullStmt(Fallthrough.get());
-    if (Fallthrough.isInvalid())
-      return false;
+    {
+      Sema::SFINAETrap Trap(S);
+
+      // If the unqualified-id return_void is found, flowing off the end of a
+      // coroutine is equivalent to a co_return with no operand. Otherwise,
+      // flowing off the end of a coroutine results in undefined behavior.
+      Fallthrough = S.BuildCoreturnStmt(FD.getLocation(), nullptr,
+                                        /*IsImplicit*/true);
+      Fallthrough = S.ActOnFinishFullStmt(Fallthrough.get());
+      if (Trap.hasErrorOccurred()) {
+        Fallthrough = {};
+      }
+    }
   }
 
   this->OnFallthrough = Fallthrough.get();
