@@ -1410,39 +1410,34 @@ bool CoroutineStmtBuilder::makeOnFallthrough() {
   // [dcl.fct.def.coroutine]/4
   // The unqualified-ids 'return_void' and 'return_value' are looked up in
   // the scope of class P. If both are found, the program is ill-formed.
-  bool HasRVoid, HasRValue;
+  //
+  // NOTE: This method has relaxed those restrictions and allows both
+  // 'return_void' and 'return_value' to both appear on the promise type.
+
+  bool HasRVoid;
   LookupResult LRVoid =
       lookupMember(S, "return_void", PromiseRecordDecl, Loc, HasRVoid);
-  LookupResult LRValue =
-      lookupMember(S, "return_value", PromiseRecordDecl, Loc, HasRValue);
 
-  StmtResult Fallthrough;
-  if (!HasRVoid && !HasRValue) {
-    // FIXME: The PDTS currently specifies this case as UB, not ill-formed.
-    // However we still diagnose this as an error since until the PDTS is fixed.
-    S.Diag(FD.getLocation(),
-           diag::err_coroutine_promise_requires_return_function)
-        << PromiseRecordDecl;
-    S.Diag(PromiseRecordDecl->getLocation(), diag::note_defined_here)
-        << PromiseRecordDecl;
-    return false;
-  } else if (HasRVoid) {
-    {
-      Sema::SFINAETrap Trap(S);
+  if (HasRVoid) {
+    // Ignore any instantiation errors here in case the `return_void` name
+    // is declared but is marked deleted or has SFINAE errors and just leave
+    // 'OnFallthrough' as null.
+    Sema::SFINAETrap Trap(S);
 
-      // If the unqualified-id return_void is found, flowing off the end of a
-      // coroutine is equivalent to a co_return with no operand. Otherwise,
-      // flowing off the end of a coroutine results in undefined behavior.
-      Fallthrough = S.BuildCoreturnStmt(FD.getLocation(), nullptr,
-                                        /*IsImplicit*/true);
-      Fallthrough = S.ActOnFinishFullStmt(Fallthrough.get());
-      if (Trap.hasErrorOccurred()) {
-        Fallthrough = {};
-      }
+    // If the unqualified-id return_void is found, flowing off the end of a
+    // coroutine is equivalent to a co_return with no operand. Otherwise,
+    // flowing off the end of a coroutine results in undefined behavior.
+    //
+    // The logic in CGCoroutine.cpp will insert an 'unreachable' instruction
+    // in the fallthrough codepath if there is no 'OnFallthrough' statement.
+    StmtResult Fallthrough =
+      S.BuildCoreturnStmt(FD.getLocation(), nullptr, /*IsImplicit*/true);
+    Fallthrough = S.ActOnFinishFullStmt(Fallthrough.get());
+    if (Fallthrough.isUsable()) {
+      this->OnFallthrough = Fallthrough.get();
     }
   }
 
-  this->OnFallthrough = Fallthrough.get();
   return true;
 }
 
