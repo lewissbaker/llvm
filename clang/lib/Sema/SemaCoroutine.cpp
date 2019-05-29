@@ -422,14 +422,23 @@ static Expr *maybeTailCall(Sema &S, QualType RetType, Expr *E,
   // EvaluateBinaryTypeTrait(BTT_IsConvertible, ...) which is at the moment
   // a private function in SemaExprCXX.cpp
 
-  ExprResult AddressExpr = buildMemberCall(S, E, Loc, "__address", None);
-  if (AddressExpr.isInvalid())
+  ExprResult Address = buildMemberCall(S, E, Loc, "__address", None);
+  if (Address.isInvalid())
+    return nullptr;
+  Expr* AddressExpr = Address.get();
+
+  ExprResult Continuation = buildMemberCall(S, E, Loc, "__continuation", None);
+  if (Continuation.isInvalid())
     return nullptr;
 
-  Expr *JustAddress = AddressExpr.get();
   // FIXME: Check that the type of AddressExpr is void*
-  return buildBuiltinCall(S, Loc, Builtin::BI__builtin_coro_resume,
-                          JustAddress);
+
+  ExprResult Call = S.ActOnCallExpr(
+    /*Scope=*/nullptr, Continuation.get(), Loc, AddressExpr, Loc);
+  if (Call.isInvalid())
+    return nullptr;
+
+  return Call.get();
 }
 
 /// Build calls to await_ready, await_suspend, and await_resume for a co_await
