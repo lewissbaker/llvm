@@ -216,9 +216,9 @@ static LValueOrRValue emitSuspendExpression(CodeGenFunction &CGF, CGCoroData &Co
   Switch->addCase(Builder.getInt8(0), ReadyBlock);
   Switch->addCase(Builder.getInt8(1), CleanupBlock);
 
-  // Emit cleanup for this suspend point.
+  // Emit 'goto final_suspend;' for this suspend point.
   CGF.EmitBlock(CleanupBlock);
-  CGF.EmitBranchThroughCleanup(Coro.CleanupJD);
+  CGF.EmitBranchThroughCleanup(Coro.FinalJD);
 
   // Emit await_resume expression.
   CGF.EmitBlock(ReadyBlock);
