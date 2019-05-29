@@ -422,12 +422,18 @@ static Expr *maybeTailCall(Sema &S, QualType RetType, Expr *E,
   // EvaluateBinaryTypeTrait(BTT_IsConvertible, ...) which is at the moment
   // a private function in SemaExprCXX.cpp
 
-  ExprResult Address = buildMemberCall(S, E, Loc, "__address", None);
+  assert(E->getValueKind() == VK_RValue);
+  E = S.CreateMaterializeTemporaryExpr(E->getType(), E, true);
+
+  OpaqueValueExpr *Operand = new (S.Context)
+      OpaqueValueExpr(Loc, E->getType(), VK_LValue, E->getObjectKind(), E);
+
+  ExprResult Address = buildMemberCall(S, Operand, Loc, "__address", None);
   if (Address.isInvalid())
     return nullptr;
-  Expr* AddressExpr = Address.get();
+  Expr *AddressExpr = Address.get();
 
-  ExprResult Continuation = buildMemberCall(S, E, Loc, "__continuation", None);
+  ExprResult Continuation = buildMemberCall(S, Operand, Loc, "__continuation", None);
   if (Continuation.isInvalid())
     return nullptr;
 
@@ -688,7 +694,7 @@ bool Sema::ActOnCoroutineBodyStart(Scope *SC, SourceLocation KWLoc,
 
   StmtResult FinalSuspend = buildFinalSuspend();
   if (FinalSuspend.isInvalid())
-    return true;
+    return false;
 
   ScopeInfo->setCoroutineFinalSuspend(FinalSuspend.get());
 
