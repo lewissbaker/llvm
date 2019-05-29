@@ -214,14 +214,15 @@ public:
     return __promise(__data_);
   }
 
-  resume_handle resume() noexcept {
+  resume_handle resume() const noexcept {
     return resume_handle::__from_address(__data_);
   }
 
-  set_done_handle set_done() noexcept {
+  set_done_handle set_done() const noexcept {
     return set_done_handle::__from_address(__data_);
   }
 
+  void destroy() const {
     __destroy(__data_);
   }
 
@@ -281,11 +282,11 @@ public:
     return __promise(__data_);
   }
 
-  resume_handle resume() noexcept {
+  resume_handle resume() const noexcept {
     return resume_handle::__from_address(__data_);
   }
 
-  set_done_handle set_done() noexcept {
+  set_done_handle set_done() const noexcept {
     return set_done_handle::__from_address(__data_);
   }
 
