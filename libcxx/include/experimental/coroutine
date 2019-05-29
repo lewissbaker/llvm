@@ -168,11 +168,36 @@ private:
   void* __data_;
 };
 
+template <typename _Tag>
+class [[nodiscard]] __noop_continuation_handle {
+public:
+  constexpr __noop_continuation_handle() noexcept {}
+  constexpr explicit operator bool() const noexcept { return __data_ != nullptr; }
+  constexpr bool operator!() const noexcept { return __data_ == nullptr; }
+  void operator()() const noexcept {}
+  static constexpr __continuation_function* __continuation() noexcept {
+    return &__noop_continuation_handle::__execute;
+  }
+  void* __address() const noexcept { return __data_; }
+  static constexpr __noop_continuation_handle __from_address(void* __data) noexcept {
+    __noop_continuation_handle __handle;
+    __handle.__data_ = __data;
+    return __handle;
+  }
+private:
+  static void __execute(void*) noexcept {
+    // Do nothing.
+  }
+
+  void* __data_;
+};
+
 // Suspend-point handle passed to promise.get_return_object() call.
 template <typename _Tag, typename _Promise>
 class [[nodiscard]] __initial_suspend_point_handle {
 public:
   using resume_handle = __resume_continuation_handle<_Tag>;
+  using set_done_handle = __noop_continuation_handle<_Tag>;
 
   constexpr __initial_suspend_point_handle() noexcept : __data_(nullptr) {}
 
@@ -193,7 +218,10 @@ public:
     return resume_handle::__from_address(__data_);
   }
 
-  void destroy() {
+  set_done_handle set_done() noexcept {
+    return set_done_handle::__from_address(__data_);
+  }
+
     __destroy(__data_);
   }
 
@@ -201,6 +229,10 @@ public:
 
   static constexpr __coroutine_promise_getter<_Promise>* __promise_getter() noexcept {
     return &__initial_suspend_point_handle::__promise;
+  }
+
+  static constexpr __continuation_function* __set_done_continuation() noexcept {
+    return set_done_handle::__continuation();
   }
 
   static constexpr __continuation_function* __resume_continuation() noexcept {
@@ -335,7 +367,7 @@ private:
 
 struct __noop_continuation_tag {};
 
-using noop_continuation_handle = __resume_continuation_handle<__noop_continuation_tag>;
+using noop_continuation_handle = __noop_continuation_handle<__noop_continuation_tag>;
 
 noop_continuation_handle noop_continuation() _NOEXCEPT {
   return noop_continuation_handle::__from_address(__builtin_coro_noop());
