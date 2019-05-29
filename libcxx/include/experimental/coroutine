@@ -333,6 +333,12 @@ public:
   , __execute_(__handle.__continuation())
   {}
 
+  template<typename _Tag>
+  _LIBCPP_CONSTEXPR continuation_handle(__noop_continuation_handle<_Tag> __handle)
+  : __data_(__handle.__address())
+  , __execute_(__handle.__continuation())
+  {}
+
   _LIBCPP_INLINE_VISIBILITY
   _LIBCPP_CONSTEXPR explicit operator bool() const _NOEXCEPT { return __execute_; }
 
@@ -614,8 +620,8 @@ public:
 struct suspend_never {
   _LIBCPP_INLINE_VISIBILITY
   bool await_ready() const _NOEXCEPT { return true; }
-  _LIBCPP_INLINE_VISIBILITY
   template<typename _Handle>
+  _LIBCPP_INLINE_VISIBILITY
   void await_suspend(_Handle) const _NOEXCEPT {}
   _LIBCPP_INLINE_VISIBILITY
   void await_resume() const _NOEXCEPT {}
