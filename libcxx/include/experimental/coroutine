@@ -86,13 +86,219 @@ struct coroutine_traits
 {
 };
 
-class with_set_done;
-class with_resume;
+using __continuation_function = void(void*);
 
-class _LIBCPP_TYPE_VIS continuation_handle {
+template<typename _Promise>
+using __coroutine_promise_getter = _Promise&(void*);
+
+// TODO: Ideally the compiler would be procedurally generating anonymous
+// continuation-handle and suspend-point-handle types for each suspend-point.
+// In the interests of getting something working quickly we implement the handle
+// types in C++ code and have the compiler instantiate them with an anonymous
+// per-suspend-point struct to ensure that the handle types are unique for each
+// suspend-point.
+
+template <typename _Tag>
+class [[nodiscard]] __resume_continuation_handle {
+public:
+  constexpr __resume_continuation_handle() noexcept : __data_(nullptr) {}
+
+  static constexpr __resume_continuation_handle __from_address(void* __data) noexcept {
+    __resume_continuation_handle __handle;
+    __handle.__data_ = __data;
+    return __handle;
+  }
+
+  constexpr explicit operator bool() const noexcept { return __data_ != nullptr; }
+  constexpr bool operator!() const noexcept { return __data_ == nullptr; }
+
+  void operator()() const {
+    __execute(__data_);
+  }
+
+  static constexpr __continuation_function* __continuation() noexcept {
+    return &__resume_continuation_handle::__execute;
+  }
+
+  void* __address() const noexcept { return __data_; }
+
+private:
+
+  static void __execute(void* __data) {
+    _LIBCPP_ASSERT(__data, "UB to invoke an invalid continuation");
+    __builtin_coro_resume(__data);
+  }
+
+  void* __data_;
+};
+
+template <typename _Tag>
+class [[nodiscard]] __set_done_continuation_handle {
+public:
+  constexpr __set_done_continuation_handle() noexcept : __data_(nullptr) {}
+
+  static constexpr __set_done_continuation_handle __from_address(void* __data) noexcept {
+    __set_done_continuation_handle __handle;
+    __handle.__data_ = __data;
+    return __handle;
+  }
+
+  constexpr explicit operator bool() const noexcept { return __data_ != nullptr; }
+  constexpr bool operator!() const noexcept { return __data_ == nullptr; }
+
+  void operator()() const {
+    __execute(__data_);
+  }
+
+  static constexpr __continuation_function* __continuation() noexcept {
+    return &__set_done_continuation_handle::__execute;
+  }
+
+  void* __address() const noexcept { return __data_; }
+
+private:
+
+  static void __execute(void* __data) {
+    _LIBCPP_ASSERT(__data, "UB to invoke an invalid continuation");
+    // HACK: Not actually "destroy" here for suspend-points other than the
+    // initial/final suspend-points.
+    __builtin_coro_destroy(__data);
+  }
+
+  void* __data_;
+};
+
+// Suspend-point handle passed to promise.get_return_object() call.
+template <typename _Tag, typename _Promise>
+class [[nodiscard]] __initial_suspend_point_handle {
+public:
+  using resume_handle = __resume_continuation_handle<_Tag>;
+
+  constexpr __initial_suspend_point_handle() noexcept : __data_(nullptr) {}
+
+  static constexpr __initial_suspend_point_handle __from_address(void* __data) noexcept {
+    __initial_suspend_point_handle __handle;
+    __handle.__data_ = __data;
+    return __handle;
+  }
+
+  constexpr explicit operator bool() const noexcept { return __data_ != nullptr; }
+  constexpr bool operator!() const noexcept { return __data_ == nullptr; }
+
+  _Promise& promise() const {
+    return __promise(__data_);
+  }
+
+  resume_handle resume() noexcept {
+    return resume_handle::__from_address(__data_);
+  }
+
+  void destroy() {
+    __destroy(__data_);
+  }
+
+  void* __address() const noexcept { return __data_; }
+
+  static constexpr __coroutine_promise_getter<_Promise>* __promise_getter() noexcept {
+    return &__initial_suspend_point_handle::__promise;
+  }
+
+  static constexpr __continuation_function* __resume_continuation() noexcept {
+    return resume_handle::__continuation();
+  }
+
+  static constexpr __continuation_function* __destroy_continuation() noexcept {
+    return &__initial_suspend_point_handle::__destroy;
+  }
+
+private:
+
+  static _Promise& __promise(void* __data) {
+    _LIBCPP_ASSERT(__data, "UB to query promise of an invalid handle");
+    return *static_cast<_Promise*>(
+        __builtin_coro_promise(__data, _LIBCPP_ALIGNOF(_Promise), false));
+  }
+
+  static void __destroy(void* __data) {
+    _LIBCPP_ASSERT(__data, "UB to destroy() an invalid coroutine");
+    __builtin_coro_destroy(__data);
+  }
+
+  void* __data_;
+};
+
+// Suspend-point handle type passed to 'co_await' and 'co_yield' expressions.
+template <typename _Tag, typename _Promise>
+class [[nodiscard]] __normal_suspend_point_handle {
+public:
+  using resume_handle = __resume_continuation_handle<_Tag>;
+  using set_done_handle = __set_done_continuation_handle<_Tag>;
+
+  constexpr __normal_suspend_point_handle() noexcept : __data_(nullptr) {}
+
+  static constexpr __normal_suspend_point_handle __from_address(void* __data) noexcept {
+    __normal_suspend_point_handle __handle;
+    __handle.__data_ = __data;
+    return __handle;
+  }
+
+  constexpr explicit operator bool() const noexcept { return __data_ != nullptr; }
+  constexpr bool operator!() const noexcept { return __data_ == nullptr; }
+
+  _Promise& promise() const {
+    return __promise(__data_);
+  }
+
+  resume_handle resume() noexcept {
+    return resume_handle::__from_address(__data_);
+  }
+
+  set_done_handle set_done() noexcept {
+    return set_done_handle::__from_address(__data_);
+  }
+
+  void* __address() const noexcept { return __data_; }
+
+  static constexpr __coroutine_promise_getter<_Promise>* __promise_getter() noexcept {
+    return &__normal_suspend_point_handle::__promise;
+  }
+
+  static constexpr __continuation_function* __resume_continuation() noexcept {
+    return resume_handle::__continuation();
+  }
+
+  static constexpr __continuation_function* __set_done_continuation() noexcept {
+    return set_done_handle::__continuation();
+  }
+
+private:
+
+  static _Promise& __promise(void* __data) {
+    _LIBCPP_ASSERT(__data, "UB to query promise of an invalid handle");
+    return *static_cast<_Promise*>(
+        __builtin_coro_promise(__data, _LIBCPP_ALIGNOF(_Promise), false));
+  }
+
+  void* __data_;
+};
+
+class _LIBCPP_TYPE_VIS [[nodiscard]] continuation_handle {
 public:
   _LIBCPP_INLINE_VISIBILITY
-  _LIBCPP_CONSTEXPR continuation_handle() _NOEXCEPT : __handle_(nullptr), __execute_(nullptr) {}
+  _LIBCPP_CONSTEXPR continuation_handle() _NOEXCEPT : __data_(nullptr), __execute_(nullptr) {}
+
+  // Implicit conversion from concrete handle types.
+  template<typename _Tag>
+  _LIBCPP_CONSTEXPR continuation_handle(__resume_continuation_handle<_Tag> __handle)
+  : __data_(__handle.__address())
+  , __execute_(__handle.__continuation())
+  {}
+
+  template<typename _Tag>
+  _LIBCPP_CONSTEXPR continuation_handle(__set_done_continuation_handle<_Tag> __handle)
+  : __data_(__handle.__address())
+  , __execute_(__handle.__continuation())
+  {}
 
   _LIBCPP_INLINE_VISIBILITY
   _LIBCPP_CONSTEXPR explicit operator bool() const _NOEXCEPT { return __execute_; }
@@ -103,57 +309,95 @@ public:
   _LIBCPP_INLINE_VISIBILITY
   void operator()() const {
     _LIBCPP_ASSERT(__execute_, "UB to invoke an invalid continuation");
-    //__execute_(__handle_);
-    // HACK: Assume the only continuation is __builtin_coro_resume() for now.
-    __builtin_coro_resume(__handle_);
+    __execute_(__data_);
   }
 
-  // HACK: Compiler will assume that __execute_ is __builtin_coro_resume() and
-  // invoke it with result of __address() call.
-  void* __address() const _NOEXCEPT { return __handle_; }
+  constexpr void* __address() const _NOEXCEPT { return __data_; }
+
+  constexpr __continuation_function* __continuation() const noexcept {
+    return __execute_;
+  }
+
+  static continuation_handle __from_address(void* __data, __continuation_function* __execute) noexcept {
+    continuation_handle __handle;
+    __handle.__data_ = __data;
+    __handle.__execute_ = __execute;
+    return __handle;
+  }
 
 private:
-  friend with_set_done;
-  friend with_resume;
-  friend continuation_handle noop_continuation() _NOEXCEPT;
-
-  explicit continuation_handle(void* __handle, void (*__execute)(void*)) _NOEXCEPT
-  : __handle_(__handle)
-  , __execute_(__execute)
-  {}
-
-  void* __handle_;
-  void (*__execute_)(void*);
+  void* __data_;
+  __continuation_function* __execute_;
 };
 
-continuation_handle noop_continuation() _NOEXCEPT {
-  return continuation_handle{__builtin_coro_noop(), [](void* __handle) {
-    __builtin_coro_resume(__handle);
-  }};
+//////////////////////
+// noop_continuation()
+
+struct __noop_continuation_tag {};
+
+using noop_continuation_handle = __resume_continuation_handle<__noop_continuation_tag>;
+
+noop_continuation_handle noop_continuation() _NOEXCEPT {
+  return noop_continuation_handle::__from_address(__builtin_coro_noop());
 }
 
-class _LIBCPP_TYPE_VIS __suspend_point_handle_base {
-public:
-  _LIBCPP_INLINE_VISIBILITY
-  _LIBCPP_CONSTEXPR explicit operator bool() const _NOEXCEPT { return __handle_; }
+////////////////
+// Implementation details of the suspend_point_handle type.
 
-  _LIBCPP_INLINE_VISIBILITY
-  _LIBCPP_CONSTEXPR bool operator!() const _NOEXCEPT { return !__handle_; }
-protected:
-  _LIBCPP_CONSTEXPR __suspend_point_handle_base() _NOEXCEPT : __handle_(nullptr) {}
-  void* __handle_;
+template<typename... _Entries>
+struct __suspend_point_vtable;
+
+template<>
+struct __suspend_point_vtable<> {};
+
+template<typename _First, typename... _Rest>
+struct __suspend_point_vtable<_First, _Rest...> : private __suspend_point_vtable<_Rest...> {
+public:
+  constexpr __suspend_point_vtable(_First __first, _Rest... __rest) noexcept
+  : __suspend_point_vtable<_Rest...>(__rest...)
+  , __data_(__first)
+  {}
+
+  template <typename _Tp>
+  constexpr const auto& __get() const noexcept {
+    if constexpr (std::is_same_v<_Tp, _First>) {
+      return __data_;
+    } else {
+      return __suspend_point_vtable<_Rest...>::template __get<_Tp>();
+    }
+  }
+private:
+  _First __data_;
 };
 
+template<typename... _Entries>
+__suspend_point_vtable(_Entries...) -> __suspend_point_vtable<_Entries...>;
+
 struct with_set_done {
+  struct __vtable_entry {
+    __continuation_function* __func;
+  };
+
+  template <
+    typename _ConcreteHandle,
+    std::enable_if_t<std::is_same_v<
+      decltype(_ConcreteHandle::__set_done_continuation()),
+      __continuation_function*>, int> = 0>
+  static constexpr __vtable_entry __make_vtable_entry() {
+    return __vtable_entry{_ConcreteHandle::__set_done_continuation()};
+  }
+
   template <typename _Base>
   class _LIBCPP_TEMPLATE_VIS __mixin : public _Base {
   public:
+    using set_done_handle = continuation_handle;
+
     _LIBCPP_INLINE_VISIBILITY
-    continuation_handle set_done() const {
-      return continuation_handle{this->__handle_, [](void* __handle) {
-        // TODO: Implement me.
-        __builtin_coro_resume(__handle);
-      }};
+    set_done_handle set_done() const {
+      _LIBCPP_ASSERT(this->__vtable_, "set_done() can only be called on a valid handle");
+      return set_done_handle::__from_address(
+        this->__handle_,
+        this->__vtable_->template __get<__vtable_entry>().__func);
     }
   protected:
     using _Base::_Base;
@@ -161,11 +405,29 @@ struct with_set_done {
 };
 
 struct with_destroy {
+  struct __vtable_entry {
+  };
+
+  template <
+    typename _ConcreteHandle,
+    std::enable_if_t<std::is_same_v<
+      decltype(_ConcreteHandle::__destroy_continuation()),
+      __continuation_function*>, int> = 0>
+  static constexpr __vtable_entry __make_vtable_entry() {
+    return __vtable_entry{};
+  }
+
   template <typename _Base>
   class _LIBCPP_TEMPLATE_VIS __mixin : public _Base {
   public:
     _LIBCPP_INLINE_VISIBILITY
     void destroy() const {
+      // TODO: Make this indirect through a vtable entry.
+      // For now we avoid this so that the compiler can more easily see the
+      // call to __builtin_coro_destroy() and so have a better chance at
+      // eliding the coroutine frame allocation.
+      // We might need to introduce some other kind of intrinsic that annotates
+      // the end-of-lifetime without actually performing the destroy.
       _LIBCPP_ASSERT(this->__handle_, "destroy() can only be called on a valid handle");
       __builtin_coro_destroy(this->__handle_);
     }
@@ -175,15 +437,30 @@ struct with_destroy {
 };
 
 struct with_resume {
+  struct __vtable_entry {
+    __continuation_function* __func;
+  };
+
+  template <
+    typename _ConcreteHandle,
+    std::enable_if_t<std::is_same_v<
+      decltype(_ConcreteHandle::__resume_continuation()),
+      __continuation_function*>, int> = 0>
+  static constexpr __vtable_entry __make_vtable_entry() {
+    return __vtable_entry{_ConcreteHandle::__resume_continuation()};
+  }
+
   template <typename _Base>
   class _LIBCPP_TEMPLATE_VIS __mixin : public _Base {
   public:
+    using resume_handle = continuation_handle;
+
     _LIBCPP_INLINE_VISIBILITY
-    continuation_handle resume() const {
-      _LIBCPP_ASSERT(this->__handle_, "resume() can only be called on a valid handle");
-      return continuation_handle{this->__handle_, [](void* __handle) {
-        __builtin_coro_resume(__handle);
-      }};
+    resume_handle resume() const {
+      _LIBCPP_ASSERT(this->__vtable_, "resume() can only be called on a valid handle");
+      return resume_handle::__from_address(
+        this->__handle_,
+        this->__vtable_->template __get<__vtable_entry>().__func);
     }
   protected:
     using _Base::_Base;
@@ -192,13 +469,26 @@ struct with_resume {
 
 template <typename _Promise>
 struct with_promise {
+  struct __vtable_entry {
+    __coroutine_promise_getter<_Promise>* __func;
+  };
+
+  template <
+    typename _ConcreteHandle,
+    std::enable_if_t<std::is_same_v<
+      decltype(_ConcreteHandle::__promise_getter()),
+      __coroutine_promise_getter<_Promise>*>, int> = 0>
+  static constexpr __vtable_entry __make_vtable_entry() {
+    return __vtable_entry{_ConcreteHandle::__promise_getter()};
+  }
+
   template <typename _Base>
   class _LIBCPP_TEMPLATE_VIS __mixin : public _Base {
   public:
     _LIBCPP_INLINE_VISIBILITY
     _Promise& promise() const {
-      return *static_cast<_Promise*>(
-        __builtin_coro_promise(this->__handle_, _LIBCPP_ALIGNOF(_Promise), false));
+      _LIBCPP_ASSERT(this->__vtable_, "promise() can only be called on a valid handle");
+      return this->__vtable_->template __get<__vtable_entry>().__func(this->__handle_);
     }
   protected:
     using _Base::_Base;
@@ -229,31 +519,41 @@ struct __make_suspend_point_handle<_Result> {
   using type = _Result;
 };
 
-template <typename... _Operations>
-using __suspend_point_handle_base_t =
-  typename __make_suspend_point_handle<
-    __suspend_point_handle_base, _Operations...>::type;
+template<typename _VTable>
+class _LIBCPP_TYPE_VIS __suspend_point_handle_base {
+public:
+  _LIBCPP_INLINE_VISIBILITY
+  _LIBCPP_CONSTEXPR explicit operator bool() const _NOEXCEPT { return __handle_; }
 
-template <typename... _Ts>
-struct __is_subset_of {
-  template <typename _U>
-  using __is_member = disjunction<is_same<_U, _Ts>...>;
+  _LIBCPP_INLINE_VISIBILITY
+  _LIBCPP_CONSTEXPR bool operator!() const _NOEXCEPT { return !__handle_; }
 
-  template <typename... _Us>
-  static constexpr bool __value = conjunction_v<__is_member<_Us>...>;
+protected:
+  _LIBCPP_CONSTEXPR __suspend_point_handle_base() _NOEXCEPT
+  : __handle_(nullptr), __vtable_(nullptr) {}
+
+  void* __handle_;
+  const _VTable* __vtable_;
 };
 
 template <typename... _Operations>
-class _LIBCPP_TEMPLATE_VIS suspend_point_handle
+using __suspend_point_vtable_t =
+  __suspend_point_vtable<typename _Operations::__vtable_entry...>;
+
+template <typename... _Operations>
+using __suspend_point_handle_base_t =
+  typename __make_suspend_point_handle<
+    __suspend_point_handle_base<__suspend_point_vtable_t<_Operations...>>,
+    _Operations...>::type;
+
+template <typename... _Operations>
+class _LIBCPP_TEMPLATE_VIS [[nodiscard]] suspend_point_handle
   : public __suspend_point_handle_base_t<_Operations...> {
-  using _Base = __suspend_point_handle_base_t<_Operations...>;
+  using _VTable = __suspend_point_vtable_t<_Operations...>;
 
   static_assert(
     conjunction_v<__is_valid_suspend_point_operation<_Operations>...>,
     "Template parameters must be one of the built-in suspend-point operations");
-
-  template <typename... _OtherOperations>
-  friend class suspend_point_handle;
 
 public:
   _LIBCPP_INLINE_VISIBILITY
@@ -265,21 +565,16 @@ public:
   _LIBCPP_INLINE_VISIBILITY
   ~suspend_point_handle() _NOEXCEPT = default;
 
-  // Allow implicit conversion from a suspend_point_handle with a wider interface.
-  template <
-    typename... _OtherOperations,
-    enable_if_t<__is_subset_of<_OtherOperations...>::template __value<_Operations...>, int> = 0>
-  suspend_point_handle(suspend_point_handle<_OtherOperations...> __sph) _NOEXCEPT
-  {
-    this->__handle_ = __sph.__handle_;
-  }
+  // Allow implicit conversion from a concrete suspend-point handle.
 
-  // Allow construction from the coroutine frame pointer.
-  // This is called by the compiler.
-  static suspend_point_handle __from_address(void* __handle) _NOEXCEPT {
-    suspend_point_handle __h;
-    __h.__handle_ = __handle;
-    return __h;
+  template <
+    typename _ConcreteHandle,
+    enable_if_t<std::is_void_v<std::void_t<
+      decltype(_Operations::template __make_vtable_entry<_ConcreteHandle>())...>>, int> = 0>
+  suspend_point_handle(_ConcreteHandle __handle) _NOEXCEPT {
+    static constexpr _VTable __vtable{_Operations::template __make_vtable_entry<_ConcreteHandle>()...};
+    this->__handle_ = __handle.__address();
+    this->__vtable_ = &__vtable;
   }
 };
 

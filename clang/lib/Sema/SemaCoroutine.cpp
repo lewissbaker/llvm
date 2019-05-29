@@ -139,19 +139,32 @@ static QualType lookupPromiseType(Sema &S, const FunctionDecl *FD,
   return PromiseType;
 }
 
-/// Look up the std::experimental::suspend_point_handle<...> type.
-static QualType lookupSuspendPointHandleType(Sema &S, QualType PromiseType,
-                                             bool CanResume,
-                                             bool CanDestroy,
-                                             SourceLocation Loc) {
+enum class SuspendPointHandleKind {
+  Initial, // get_return_object()
+  Normal // co_await/co_yield
+};
+
+static QualType lookupPerSuspendPointHandleType(Sema &S, FunctionDecl* FD,
+                                                QualType PromiseType,
+                                                SuspendPointHandleKind HandleKind,
+                                                SourceLocation Loc) {
   NamespaceDecl *StdExp = S.lookupStdExperimentalNamespace();
   assert(StdExp && "Should already be diagnosed");
 
-  LookupResult Result(S, &S.PP.getIdentifierTable().get("suspend_point_handle"),
-                      Loc, Sema::LookupOrdinaryName);
+  IdentifierInfo* TypeIdentifier = nullptr;
+  switch (HandleKind) {
+  case SuspendPointHandleKind::Initial:
+    TypeIdentifier = &S.PP.getIdentifierTable().get("__initial_suspend_point_handle");
+    break;
+  case SuspendPointHandleKind::Normal:
+    TypeIdentifier = &S.PP.getIdentifierTable().get("__normal_suspend_point_handle");
+    break;
+  }
+
+  LookupResult Result(S, TypeIdentifier, Loc, Sema::LookupOrdinaryName);
   if (!S.LookupQualifiedName(Result, StdExp)) {
     S.Diag(Loc, diag::err_implied_coroutine_type_not_found)
-        << "std::experimental::suspend_point_handle";
+        << "std::experimental::__xxx_suspend_point_handle";
     return QualType();
   }
 
@@ -163,107 +176,26 @@ static QualType lookupSuspendPointHandleType(Sema &S, QualType PromiseType,
     return QualType();
   }
 
+  // Declare an anonymous empty struct unique to this suspend-point that we can
+  // use as the tag type template parameter.
+  CXXRecordDecl* TagDecl = CXXRecordDecl::Create(
+    S.Context, TTK_Struct, FD, Loc, Loc,
+    nullptr /*Id*/, nullptr /*PrevDecl*/, false/*DelayTypeCreation*/);
+  TagDecl->startDefinition();
+  TagDecl->completeDefinition();
+
+  CanQualType TagType =
+    S.Context.getCanonicalType(S.Context.getTypeDeclType(TagDecl));
+
   // Form template argument list for suspend_point_handle<...>
   TemplateArgumentListInfo Args(Loc, Loc);
+  Args.addArgument(TemplateArgumentLoc{
+    TemplateArgument{TagType},
+    S.Context.getTrivialTypeSourceInfo(TagType, Loc)});
+  Args.addArgument(TemplateArgumentLoc{
+    TemplateArgument{PromiseType},
+    S.Context.getTrivialTypeSourceInfo(PromiseType, Loc)});
 
-  if (!PromiseType.isNull()) {
-    // Lookup std::experimental::with_promise<P>
-    LookupResult WithPromiseResult(S, &S.PP.getIdentifierTable().get("with_promise"),
-                                   Loc, Sema::LookupOrdinaryName);
-    if (!S.LookupQualifiedName(WithPromiseResult, StdExp)) {
-      S.Diag(Loc, diag::err_implied_coroutine_type_not_found)
-          << "std::experimental::with_promise";
-      return QualType();
-    }
-
-    ClassTemplateDecl *WithPromise = WithPromiseResult.getAsSingle<ClassTemplateDecl>();
-    if (!WithPromise) {
-      WithPromiseResult.suppressDiagnostics();
-      NamedDecl *Found = *WithPromiseResult.begin();
-      S.Diag(Found->getLocation(), diag::err_malformed_std_coroutine_handle);
-      return QualType();
-    }
-
-    TemplateArgumentListInfo WithPromiseArgs(Loc, Loc);
-    WithPromiseArgs.addArgument(TemplateArgumentLoc(
-      TemplateArgument(PromiseType),
-      S.Context.getTrivialTypeSourceInfo(PromiseType, Loc)));
-
-    // Build the with_promise<P> template-id.
-    QualType WithPromiseType =
-      S.CheckTemplateIdType(TemplateName(WithPromise), Loc, WithPromiseArgs);
-    if (WithPromiseType.isNull()) {
-      return QualType();
-    }
-    if (S.RequireCompleteType(Loc, WithPromiseType,
-                              diag::err_coroutine_type_missing_specialization)) {
-      return QualType();
-    }
-
-    Args.addArgument(TemplateArgumentLoc(
-      TemplateArgument(WithPromiseType),
-      S.Context.getTrivialTypeSourceInfo(WithPromiseType, Loc)));
-  }
-
-  if (CanResume) {
-    // Add the 'with_resume' template arg.
-    LookupResult WithResumeResult(S, &S.PP.getIdentifierTable().get("with_resume"),
-                                  Loc, Sema::LookupOrdinaryName);
-    if (!S.LookupQualifiedName(WithResumeResult, StdExp)) {
-      S.Diag(Loc, diag::err_implied_coroutine_type_not_found)
-          << "std::experimental::with_resume";
-      return QualType();
-    }
-
-    RecordDecl* WithResume = WithResumeResult.getAsSingle<RecordDecl>();
-    if (!WithResume) {
-      WithResumeResult.suppressDiagnostics();
-      NamedDecl* Found = *WithResumeResult.begin();
-      S.Diag(Found->getLocation(), diag::err_malformed_std_coroutine_handle);
-      return QualType();
-    }
-
-    QualType WithResumeType = S.Context.getRecordType(WithResume);
-    if (WithResumeType.isNull()) {
-      S.Diag(WithResume->getLocation(), diag::err_malformed_std_coroutine_handle);
-      return QualType();
-    }
-
-    Args.addArgument(TemplateArgumentLoc(
-      TemplateArgument(WithResumeType),
-      S.Context.getTrivialTypeSourceInfo(WithResumeType, Loc)));
-  }
-
-  if (CanDestroy) {
-    // Add the 'with_destroy' template arg.
-    LookupResult WithDestroyResult(S, &S.PP.getIdentifierTable().get("with_destroy"),
-                                  Loc, Sema::LookupOrdinaryName);
-    if (!S.LookupQualifiedName(WithDestroyResult, StdExp)) {
-      S.Diag(Loc, diag::err_implied_coroutine_type_not_found)
-          << "std::experimental::with_destroy";
-      return QualType();
-    }
-
-    RecordDecl* WithDestroy = WithDestroyResult.getAsSingle<RecordDecl>();
-    if (!WithDestroy) {
-      WithDestroyResult.suppressDiagnostics();
-      NamedDecl* Found = *WithDestroyResult.begin();
-      S.Diag(Found->getLocation(), diag::err_malformed_std_coroutine_handle);
-      return QualType();
-    }
-
-    QualType WithDestroyType = S.Context.getRecordType(WithDestroy);
-    if (WithDestroyType.isNull()) {
-      S.Diag(WithDestroy->getLocation(), diag::err_malformed_std_coroutine_handle);
-      return QualType();
-    }
-
-    Args.addArgument(TemplateArgumentLoc(
-      TemplateArgument(WithDestroyType),
-      S.Context.getTrivialTypeSourceInfo(WithDestroyType, Loc)));
-  }
-
-  // Build the template-id.
   QualType SuspendPointHandleType =
       S.CheckTemplateIdType(TemplateName(SuspendPointHandle), Loc, Args);
   if (SuspendPointHandleType.isNull()) {
@@ -412,12 +344,12 @@ static Expr *buildBuiltinCall(Sema &S, SourceLocation Loc, Builtin::ID Id,
   return Call.get();
 }
 
-static ExprResult buildSuspendPointHandle(Sema &S, QualType PromiseType,
-                                          bool CanResume,
-                                          bool CanDestroy,
-                                          SourceLocation Loc) {
-  QualType SuspendPointHandleType = lookupSuspendPointHandleType(
-      S, PromiseType, CanResume, CanDestroy, Loc);
+static ExprResult buildPerSuspendPointHandle(Sema &S, FunctionDecl* FD,
+                                             QualType PromiseType,
+                                             SuspendPointHandleKind HandleKind,
+                                             SourceLocation Loc) {
+  QualType SuspendPointHandleType = lookupPerSuspendPointHandleType(
+      S, FD, PromiseType, HandleKind, Loc);
   if (SuspendPointHandleType.isNull())
     return ExprError();
 
@@ -502,7 +434,8 @@ static Expr *maybeTailCall(Sema &S, QualType RetType, Expr *E,
 
 /// Build calls to await_ready, await_suspend, and await_resume for a co_await
 /// expression.
-static ReadySuspendResumeResult buildCoawaitCalls(Sema &S, VarDecl *CoroPromise,
+static ReadySuspendResumeResult buildCoawaitCalls(Sema &S, FunctionDecl* FD,
+                                                  VarDecl *CoroPromise,
                                                   SourceLocation Loc, Expr *E) {
   OpaqueValueExpr *Operand = new (S.Context)
       OpaqueValueExpr(Loc, E->getType(), VK_LValue, E->getObjectKind(), E);
@@ -510,10 +443,9 @@ static ReadySuspendResumeResult buildCoawaitCalls(Sema &S, VarDecl *CoroPromise,
   // Assume invalid until we see otherwise.
   ReadySuspendResumeResult Calls = {{}, Operand, /*IsInvalid=*/true};
 
-  ExprResult CoroHandleRes = buildSuspendPointHandle(
-      S, CoroPromise->getType(),
-      true /* CanResume */,
-      true /* CanDestroy */,
+  ExprResult CoroHandleRes = buildPerSuspendPointHandle(
+      S, FD, CoroPromise->getType(),
+      SuspendPointHandleKind::Normal,
       Loc);
   if (CoroHandleRes.isInvalid())
     return Calls;
@@ -885,7 +817,7 @@ ExprResult Sema::BuildResolvedCoawaitExpr(SourceLocation Loc, Expr *E,
 
   // Build the await_ready, await_suspend, await_resume calls.
   ReadySuspendResumeResult RSS =
-      buildCoawaitCalls(*this, Coroutine->CoroutinePromise, CallLoc, E);
+      buildCoawaitCalls(*this, this->getCurFunctionDecl(), Coroutine->CoroutinePromise, CallLoc, E);
   if (RSS.IsInvalid)
     return ExprError();
 
@@ -940,7 +872,7 @@ ExprResult Sema::BuildCoyieldExpr(SourceLocation Loc, Expr *E) {
 
   // Build the await_ready, await_suspend, await_resume calls.
   ReadySuspendResumeResult RSS =
-      buildCoawaitCalls(*this, Coroutine->CoroutinePromise, Loc, E);
+      buildCoawaitCalls(*this, this->getCurFunctionDecl(), Coroutine->CoroutinePromise, Loc, E);
   if (RSS.IsInvalid)
     return ExprError();
 
@@ -1490,8 +1422,7 @@ bool CoroutineStmtBuilder::makeReturnObject() {
   QualType PromiseType = Fn.CoroutinePromise->getType();
 
   ExprResult SuspendPointHandle =
-      buildSuspendPointHandle(S, PromiseType, true /* CanResume */,
-                              true /* CanDestroy */, Loc);
+      buildPerSuspendPointHandle(S, &FD, PromiseType, SuspendPointHandleKind::Initial, Loc);
   if (SuspendPointHandle.isInvalid())
     return false;
 
