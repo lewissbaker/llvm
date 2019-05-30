@@ -362,12 +362,12 @@ void ASTStmtWriter::VisitCoroutineSuspendExpr(CoroutineSuspendExpr *E) {
   Record.AddSourceLocation(E->getKeywordLoc());
   for (Stmt *S : E->children())
     Record.AddStmt(S);
-  Record.AddStmt(E->getOpaqueValue());
+  Record.AddStmt(E->getAwaiterOpaqueValue());
+  Record.AddStmt(E->getSuspendOpaqueValue());
 }
 
 void ASTStmtWriter::VisitCoawaitExpr(CoawaitExpr *E) {
   VisitCoroutineSuspendExpr(E);
-  Record.push_back(E->isImplicit());
   Code = serialization::EXPR_COAWAIT;
 }
 

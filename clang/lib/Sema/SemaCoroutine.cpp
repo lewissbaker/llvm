@@ -375,9 +375,10 @@ static ExprResult buildPerSuspendPointHandle(Sema &S, FunctionDecl* FD,
 }
 
 struct ReadySuspendResumeResult {
-  enum AwaitCallType { ACT_Ready, ACT_Suspend, ACT_Resume };
-  Expr *Results[3];
-  OpaqueValueExpr *OpaqueValue;
+  enum AwaitCallType { ACT_Ready, ACT_Suspend, ACT_Resume, ACT_Continuation };
+  Expr *Results[4];
+  OpaqueValueExpr *AwaiterOpaqueValue;
+  OpaqueValueExpr *SuspendOpaqueValue;
   bool IsInvalid;
 };
 
@@ -406,21 +407,30 @@ static ExprResult buildMemberCall(Sema &S, Expr *Base, SourceLocation Loc,
   return S.ActOnCallExpr(nullptr, Result.get(), Loc, Args, Loc, nullptr);
 }
 
+struct TailCallResult {
+  Expr *SuspendCall;
+  OpaqueValueExpr *SuspendOpaqueValue;
+  Expr *ContinuationCall;
+  bool IsInvalid;
+};
+
 // See if return type is coroutine-handle and if so, invoke builtin coro-resume
 // on its address. This is to enable experimental support for coroutine-handle
 // returning await_suspend that results in a guaranteed tail call to the target
 // coroutine.
-static Expr *maybeTailCall(Sema &S, QualType RetType, Expr *E,
-                           SourceLocation Loc) {
+static TailCallResult maybeTailCall(Sema &S, QualType RetType, Expr *E,
+                                    SourceLocation Loc) {
+  TailCallResult Result = {nullptr, nullptr, nullptr, true};
+
   if (RetType->isReferenceType())
-    return nullptr;
+    return Result;
   Type const *T = RetType.getTypePtr();
   if (!T->isClassType() && !T->isStructureType())
-    return nullptr;
+    return Result;
 
-  // FIXME: Add convertability check to continuation_handle. Possibly via
-  // EvaluateBinaryTypeTrait(BTT_IsConvertible, ...) which is at the moment
-  // a private function in SemaExprCXX.cpp
+  // FIXME: Add check that return type is a valid continuation handle type.
+  // ie. is either 'continuation_handle' or is one of the "compiler generated"
+  // continuation handle types.
 
   assert(E->getValueKind() == VK_RValue);
   E = S.CreateMaterializeTemporaryExpr(E->getType(), E, true);
@@ -430,21 +440,26 @@ static Expr *maybeTailCall(Sema &S, QualType RetType, Expr *E,
 
   ExprResult Address = buildMemberCall(S, Operand, Loc, "__address", None);
   if (Address.isInvalid())
-    return nullptr;
+    return Result;
   Expr *AddressExpr = Address.get();
 
   ExprResult Continuation = buildMemberCall(S, Operand, Loc, "__continuation", None);
   if (Continuation.isInvalid())
-    return nullptr;
+    return Result;
 
   // FIXME: Check that the type of AddressExpr is void*
 
   ExprResult Call = S.ActOnCallExpr(
     /*Scope=*/nullptr, Continuation.get(), Loc, AddressExpr, Loc);
   if (Call.isInvalid())
-    return nullptr;
+    return Result;
 
-  return Call.get();
+  Result.SuspendCall = E;
+  Result.SuspendOpaqueValue = Operand;
+  Result.ContinuationCall = Call.get();
+  Result.IsInvalid = false;
+
+  return Result;
 }
 
 /// Build calls to await_ready, await_suspend, and await_resume for a co_await
@@ -456,7 +471,7 @@ static ReadySuspendResumeResult buildCoawaitCalls(Sema &S, FunctionDecl* FD,
       OpaqueValueExpr(Loc, E->getType(), VK_LValue, E->getObjectKind(), E);
 
   // Assume invalid until we see otherwise.
-  ReadySuspendResumeResult Calls = {{}, Operand, /*IsInvalid=*/true};
+  ReadySuspendResumeResult Calls = {{}, Operand, nullptr, /*IsInvalid=*/true};
 
   ExprResult CoroHandleRes = buildPerSuspendPointHandle(
       S, FD, CoroPromise->getType(),
@@ -466,19 +481,27 @@ static ReadySuspendResumeResult buildCoawaitCalls(Sema &S, FunctionDecl* FD,
     return Calls;
   Expr *CoroHandle = CoroHandleRes.get();
 
-  const StringRef Funcs[] = {"await_ready", "await_suspend", "await_resume"};
-  MultiExprArg Args[] = {None, CoroHandle, None};
-  for (size_t I = 0, N = llvm::array_lengthof(Funcs); I != N; ++I) {
-    ExprResult Result = buildMemberCall(S, Operand, Loc, Funcs[I], Args[I]);
-    if (Result.isInvalid())
-      return Calls;
-    Calls.Results[I] = Result.get();
-  }
+  auto ReadyResult = buildMemberCall(S, Operand, Loc, "await_ready", None);
+  if (ReadyResult.isInvalid())
+    return Calls;
+
+  auto SuspendResult = buildMemberCall(S, Operand, Loc, "await_suspend", CoroHandle);
+  if (SuspendResult.isInvalid())
+    return Calls;
+
+  auto ResumeResult = buildMemberCall(S, Operand, Loc, "await_resume", None);
+  if (ResumeResult.isInvalid())
+    return Calls;
+    
+  using ACT = ReadySuspendResumeResult::AwaitCallType;
+
+  Calls.Results[ACT::ACT_Ready] = ReadyResult.get();
+  Calls.Results[ACT::ACT_Suspend] = SuspendResult.get();
+  Calls.Results[ACT::ACT_Resume] = ResumeResult.get();
 
   // Assume the calls are valid; all further checking should make them invalid.
   Calls.IsInvalid = false;
 
-  using ACT = ReadySuspendResumeResult::AwaitCallType;
   CallExpr *AwaitReady = cast<CallExpr>(Calls.Results[ACT::ACT_Ready]);
   if (!AwaitReady->getType()->isDependentType()) {
     // [expr.await]p3 [...]
@@ -502,9 +525,12 @@ static ReadySuspendResumeResult buildCoawaitCalls(Sema &S, FunctionDecl* FD,
     QualType RetType = AwaitSuspend->getCallReturnType(S.Context);
 
     // Experimental support for coroutine_handle returning await_suspend.
-    if (Expr *TailCallSuspend = maybeTailCall(S, RetType, AwaitSuspend, Loc))
-      Calls.Results[ACT::ACT_Suspend] = TailCallSuspend;
-    else {
+    TailCallResult TailCallSuspendResult = maybeTailCall(S, RetType, AwaitSuspend, Loc);
+    if (!TailCallSuspendResult.IsInvalid) {
+      Calls.Results[ACT::ACT_Suspend] = TailCallSuspendResult.SuspendCall;
+      Calls.Results[ACT::ACT_Continuation] = TailCallSuspendResult.ContinuationCall;
+      Calls.SuspendOpaqueValue = TailCallSuspendResult.SuspendOpaqueValue;
+    } else {
       // non-class prvalues always have cv-unqualified types
       if (RetType->isReferenceType() ||
           (!RetType->isBooleanType() && !RetType->isVoidType())) {
@@ -678,12 +704,17 @@ bool Sema::ActOnCoroutineBodyStart(Scope *SC, SourceLocation KWLoc,
     if (Suspend.isInvalid())
       return StmtError();
 
-    Expr* FinalSuspendTailCallExpr =
+    TailCallResult TailCallSuspendResult =
       maybeTailCall(*this, Suspend.get()->getType(), Suspend.get(), Loc);
+    if (TailCallSuspendResult.IsInvalid)  {
+      Diag(Loc, diag::note_coroutine_promise_final_suspend_implicitly_required);
+      Diag(KWLoc, diag::note_declared_coroutine_here) << Keyword;
+      return StmtError();
+    }
 
-    // TODO: Check that return-type of final_suspend() is a continuation_handle.
+    // TODO: Implement opaque-value-handling
 
-    Suspend = ActOnFinishFullExpr(FinalSuspendTailCallExpr, /*DiscardedValue*/ false);
+    Suspend = ActOnFinishFullExpr(TailCallSuspendResult.ContinuationCall, /*DiscardedValue*/true);
     if (Suspend.isInvalid()) {
       Diag(Loc, diag::note_coroutine_promise_final_suspend_implicitly_required);
       Diag(KWLoc, diag::note_declared_coroutine_here) << Keyword;
@@ -802,9 +833,8 @@ ExprResult Sema::BuildUnresolvedCoawaitExpr(SourceLocation Loc, Expr *E,
   return BuildResolvedCoawaitExpr(Loc, Awaitable.get());
 }
 
-ExprResult Sema::BuildResolvedCoawaitExpr(SourceLocation Loc, Expr *E,
-                                  bool IsImplicit) {
-  auto *Coroutine = checkCoroutineContext(*this, Loc, "co_await", IsImplicit);
+ExprResult Sema::BuildResolvedCoawaitExpr(SourceLocation Loc, Expr *E) {
+  auto *Coroutine = checkCoroutineContext(*this, Loc, "co_await");
   if (!Coroutine)
     return ExprError();
 
@@ -816,7 +846,7 @@ ExprResult Sema::BuildResolvedCoawaitExpr(SourceLocation Loc, Expr *E,
 
   if (E->getType()->isDependentType()) {
     Expr *Res = new (Context)
-        CoawaitExpr(Loc, Context.DependentTy, E, IsImplicit);
+        CoawaitExpr(Loc, Context.DependentTy, E);
     return Res;
   }
 
@@ -836,9 +866,15 @@ ExprResult Sema::BuildResolvedCoawaitExpr(SourceLocation Loc, Expr *E,
   if (RSS.IsInvalid)
     return ExprError();
 
+  using ACT = ReadySuspendResumeResult::AwaitCallType;
   Expr *Res =
-      new (Context) CoawaitExpr(Loc, E, RSS.Results[0], RSS.Results[1],
-                                RSS.Results[2], RSS.OpaqueValue, IsImplicit);
+      new (Context) CoawaitExpr(Loc, E,
+                                RSS.Results[ACT::ACT_Ready],
+                                RSS.Results[ACT::ACT_Suspend],
+                                RSS.Results[ACT::ACT_Continuation],
+                                RSS.Results[ACT::ACT_Resume],
+                                RSS.AwaiterOpaqueValue,
+                                RSS.SuspendOpaqueValue);
 
   return Res;
 }
@@ -864,6 +900,7 @@ ExprResult Sema::ActOnCoyieldExpr(Scope *S, SourceLocation Loc, Expr *E) {
 
   return BuildCoyieldExpr(Loc, Awaitable.get());
 }
+
 ExprResult Sema::BuildCoyieldExpr(SourceLocation Loc, Expr *E) {
   auto *Coroutine = checkCoroutineContext(*this, Loc, "co_yield");
   if (!Coroutine)
@@ -891,9 +928,15 @@ ExprResult Sema::BuildCoyieldExpr(SourceLocation Loc, Expr *E) {
   if (RSS.IsInvalid)
     return ExprError();
 
+  using ACT = ReadySuspendResumeResult::AwaitCallType;
   Expr *Res =
-      new (Context) CoyieldExpr(Loc, E, RSS.Results[0], RSS.Results[1],
-                                RSS.Results[2], RSS.OpaqueValue);
+      new (Context) CoyieldExpr(Loc, E,
+                                RSS.Results[ACT::ACT_Ready],
+                                RSS.Results[ACT::ACT_Suspend],
+                                RSS.Results[ACT::ACT_Continuation],
+                                RSS.Results[ACT::ACT_Resume],
+                                RSS.AwaiterOpaqueValue,
+                                RSS.SuspendOpaqueValue);
 
   return Res;
 }

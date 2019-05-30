@@ -1407,9 +1407,8 @@ public:
   ///
   /// By default, performs semantic analysis to build the new expression.
   /// Subclasses may override this routine to provide different behavior.
-  ExprResult RebuildCoawaitExpr(SourceLocation CoawaitLoc, Expr *Result,
-                                bool IsImplicit) {
-    return getSema().BuildResolvedCoawaitExpr(CoawaitLoc, Result, IsImplicit);
+  ExprResult RebuildCoawaitExpr(SourceLocation CoawaitLoc, Expr *Result) {
+    return getSema().BuildResolvedCoawaitExpr(CoawaitLoc, Result);
   }
 
   /// Build a new co_await expression.
@@ -7219,8 +7218,7 @@ TreeTransform<Derived>::TransformCoawaitExpr(CoawaitExpr *E) {
 
   // Always rebuild; we don't know if this needs to be injected into a new
   // context or if the promise type has changed.
-  return getDerived().RebuildCoawaitExpr(E->getKeywordLoc(), Result.get(),
-                                         E->isImplicit());
+  return getDerived().RebuildCoawaitExpr(E->getKeywordLoc(), Result.get());
 }
 
 template <typename Derived>

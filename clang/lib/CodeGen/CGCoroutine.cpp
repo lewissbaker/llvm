@@ -172,10 +172,10 @@ static LValueOrRValue emitSuspendExpression(CodeGenFunction &CGF, CGCoroData &Co
                                     CoroutineSuspendExpr const &S,
                                     AwaitKind Kind, AggValueSlot aggSlot,
                                     bool ignoreResult, bool forLValue) {
-  auto *E = S.getCommonExpr();
+  auto *Awaiter = S.getAwaiterExpr();
 
   auto Binder =
-      CodeGenFunction::OpaqueValueMappingData::bind(CGF, S.getOpaqueValue(), E);
+      CodeGenFunction::OpaqueValueMappingData::bind(CGF, S.getAwaiterOpaqueValue(), Awaiter);
   auto UnbindOnExit = llvm::make_scope_exit([&] { Binder.unbind(CGF); });
 
   auto Prefix = buildSuspendPrefixStr(Coro, Kind);
@@ -194,14 +194,31 @@ static LValueOrRValue emitSuspendExpression(CodeGenFunction &CGF, CGCoroData &Co
   auto *NullPtr = llvm::ConstantPointerNull::get(CGF.CGM.Int8PtrTy);
   auto *SaveCall = Builder.CreateCall(CoroSave, {NullPtr});
 
-  auto *SuspendRet = CGF.EmitScalarExpr(S.getSuspendExpr());
-  if (SuspendRet != nullptr && SuspendRet->getType()->isIntegerTy(1)) {
-    // Veto suspension if requested by bool returning await_suspend.
-    BasicBlock *RealSuspendBlock =
-        CGF.createBasicBlock(Prefix + Twine(".suspend.bool"));
-    CGF.Builder.CreateCondBr(SuspendRet, RealSuspendBlock, ReadyBlock);
-    SuspendBlock = RealSuspendBlock;
-    CGF.EmitBlock(RealSuspendBlock);
+  auto *Suspend = S.getSuspendExpr();
+  auto *Continuation = S.getContinuationExpr();
+  if (Continuation != nullptr) {
+    auto *SuspendOpaqueValue = S.getSuspendOpaqueValue();
+    assert(SuspendOpaqueValue != nullptr);
+
+    auto SuspendBinder =
+      CodeGenFunction::OpaqueValueMappingData::bind(CGF, SuspendOpaqueValue, Suspend);
+    auto UnbindOnExit = llvm::make_scope_exit([&] { SuspendBinder.unbind(CGF); });
+
+    auto *ContinuationRet = CGF.EmitScalarExpr(Continuation);
+    assert(
+      ContinuationRet != nullptr && ContinuationRet->getType()->isVoidTy() &&
+      "Invoking the continuation should always return void.");
+    (void)ContinuationRet;
+  } else {
+    auto *SuspendRet = CGF.EmitScalarExpr(Suspend);
+    if (SuspendRet != nullptr && SuspendRet->getType()->isIntegerTy(1)) {
+      // Veto suspension if requested by bool returning await_suspend.
+      BasicBlock *RealSuspendBlock =
+          CGF.createBasicBlock(Prefix + Twine(".suspend.bool"));
+      CGF.Builder.CreateCondBr(SuspendRet, RealSuspendBlock, ReadyBlock);
+      SuspendBlock = RealSuspendBlock;
+      CGF.EmitBlock(RealSuspendBlock);
+    }
   }
 
   // Emit the suspend point.
@@ -669,12 +686,11 @@ void CodeGenFunction::EmitCoroutineBody(const CoroutineBodyStmt &S) {
     const bool CanFallthrough = Builder.GetInsertBlock() != nullptr;
     const bool HasCoreturns = CurCoro.Data->CoreturnCount > 0;
     if (CanFallthrough || HasCoreturns) {
-      EmitBlock(FinalBB);
-
       llvm::Function *CoroSave = CGM.getIntrinsic(llvm::Intrinsic::coro_save);
       llvm::Function *CoroSuspend = CGM.getIntrinsic(llvm::Intrinsic::coro_suspend);
       auto *CleanupBB = createBasicBlock("final.cleanup");
 
+      EmitBlock(FinalBB);
       auto *FinalSaveCall = Builder.CreateCall(CoroSave, {NullPtr});
       EmitStmt(S.getFinalSuspendStmt());
       auto *FinalSuspendResult = Builder.CreateCall(
