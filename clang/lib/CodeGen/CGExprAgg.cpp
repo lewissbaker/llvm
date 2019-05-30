@@ -112,6 +112,9 @@ public:
   void VisitGenericSelectionExpr(GenericSelectionExpr *GE) {
     Visit(GE->getResultExpr());
   }
+  void VisitCoroutineTailCallExpr(CoroutineTailCallExpr *E) {
+    CGF.EmitCoroutineTailCallExpr(*E);
+  }
   void VisitCoawaitExpr(CoawaitExpr *E) {
     CGF.EmitCoawaitExpr(*E, Dest, IsResultUnused);
   }

@@ -1862,6 +1862,10 @@ void StmtProfiler::VisitCoreturnStmt(const CoreturnStmt *S) {
   VisitStmt(S);
 }
 
+void StmtProfiler::VisitCoroutineTailCallExpr(const CoroutineTailCallExpr *S) {
+  VisitExpr(S);
+}
+
 void StmtProfiler::VisitCoawaitExpr(const CoawaitExpr *S) {
   VisitExpr(S);
 }

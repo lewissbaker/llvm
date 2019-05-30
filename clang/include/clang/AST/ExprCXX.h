@@ -4486,6 +4486,98 @@ public:
   }
 };
 
+// Represents an expression that symmetrically transfers (ie. tail-calls) to
+// the continuation returned by the HandleExpr.
+//
+// The HandleExpr will typically be either a call to awaiter.await_suspend()
+// or a call to promise.final_suspend() that returns a continuation-handle.
+//
+// The HandleExpr must return an object that satisfies the "ContinuationHandle"
+// concept. ie. that
+// - it has a .__continuation() method that returns a `T(*)(void*)`.
+// - it has a .__address() method that returns a `void*`.
+//
+// The invocation of the continuation 'handle.__continuation()(handle.__address())'
+// is represented by the 'InvokeExpr' which must be a CallExpr.
+// The CallExpr may contain references to the HandlePlaceholder opaque value
+// which will be replaced with an lvalue reference to the result of evaluating
+// HandleExpr.
+//
+// The codegen for this expr will generate a tail-call to the Invoke call
+// expression.
+class CoroutineTailCallExpr : public Expr {
+  friend class ASTStmtReader;
+
+  enum SubExpr {
+    Handle,
+    Invoke,
+    Count
+  };
+  Stmt *SubExprs[SubExpr::Count];
+
+  // Placeholder for the result of the Handle expression.
+  // This OpaqueValueExpr will be replaced by an lvalue reference to the result
+  // of the 'Handle' expression inside the 'Invoke' expression.
+  OpaqueValueExpr *HandlePlaceholder = nullptr;
+public:
+  CoroutineTailCallExpr(Expr *Handle, CallExpr *Invoke,
+                        OpaqueValueExpr *HandlePlaceholder)
+  : Expr(CoroutineTailCallExprClass, Invoke->getType(), Invoke->getValueKind(),
+         Invoke->getObjectKind(), Invoke->isTypeDependent(),
+         Invoke->isValueDependent(), Invoke->isInstantiationDependent(),
+         /*ContainsUnexpandedParameterPack=*/false)
+  , HandlePlaceholder(HandlePlaceholder)
+  {
+    SubExprs[SubExpr::Handle] = Handle;
+    SubExprs[SubExpr::Invoke] = Invoke;
+  }
+
+  explicit CoroutineTailCallExpr(EmptyShell Empty)
+  : Expr(CoroutineTailCallExprClass, Empty)
+  {
+    SubExprs[SubExpr::Handle] = nullptr;
+    SubExprs[SubExpr::Invoke] = nullptr;
+  }
+
+  OpaqueValueExpr *getHandlePlaceholder() const {
+    return HandlePlaceholder;
+  }
+
+  Expr *getHandleExpr() const {
+    return cast<Expr>(SubExprs[SubExpr::Handle]);
+  }
+
+  CallExpr *getInvokeExpr() const {
+    return cast<CallExpr>(SubExprs[SubExpr::Invoke]);
+  }
+
+  SourceLocation getBeginLoc() const LLVM_READONLY {
+    auto *Invoke = getInvokeExpr();
+    if (!Invoke)
+      return SourceLocation{};
+    return Invoke->getBeginLoc();
+  }
+
+  SourceLocation getEndLoc() const LLVM_READONLY {
+    auto *Invoke = getInvokeExpr();
+    if (!Invoke)
+      return SourceLocation{};
+    return Invoke->getEndLoc();
+  }
+
+  child_range children() {
+    return child_range(SubExprs, SubExprs + SubExpr::Count);
+  }
+
+  const_child_range children() const {
+    return const_child_range(SubExprs, SubExprs + SubExpr::Count);
+  }
+
+  static bool classof(const Stmt *T) {
+    return T->getStmtClass() == CoroutineTailCallExprClass;
+  }
+};
+
 /// Represents an expression that might suspend coroutine execution;
 /// either a co_await or co_yield expression.
 ///
@@ -4512,13 +4604,9 @@ class CoroutineSuspendExpr : public Expr {
     // Where 'awaiter' is result of Awaiter expression.
     Ready,
 
-    // Call to awaiter.await_suspend()
+    // Call to awaiter.await_suspend() or a CoroutineTailCallExpr.
     // Where 'awaiter' is result of Awaiter expression.
     Suspend,
-
-    // Call to handle.__continuation()(handle.__address())
-    // Where 'handle' is result of Suspend expression.
-    Continuation,
 
     // Call to awaiter.await_resume()
     // Where 'awaiter' is result of Awaiter expression.
@@ -4529,23 +4617,19 @@ class CoroutineSuspendExpr : public Expr {
 
   Stmt *SubExprs[SubExpr::Count];
   OpaqueValueExpr *AwaiterOpaqueValue = nullptr;
-  OpaqueValueExpr *SuspendOpaqueValue = nullptr;
 
 public:
   CoroutineSuspendExpr(StmtClass SC, SourceLocation KeywordLoc, Expr *Awaiter,
-                       Expr *Ready, Expr *Suspend, Expr *Continuation, Expr *Resume,
-                       OpaqueValueExpr *AwaiterOpaqueValue,
-                       OpaqueValueExpr *SuspendOpaqueValue)
+                       Expr *Ready, Expr *Suspend, Expr *Resume,
+                       OpaqueValueExpr *AwaiterOpaqueValue)
       : Expr(SC, Resume->getType(), Resume->getValueKind(),
              Resume->getObjectKind(), Resume->isTypeDependent(),
              Resume->isValueDependent(), Awaiter->isInstantiationDependent(),
              Awaiter->containsUnexpandedParameterPack()),
-        KeywordLoc(KeywordLoc), AwaiterOpaqueValue(AwaiterOpaqueValue),
-        SuspendOpaqueValue(SuspendOpaqueValue) {
+        KeywordLoc(KeywordLoc), AwaiterOpaqueValue(AwaiterOpaqueValue) {
     SubExprs[SubExpr::Awaiter] = Awaiter;
     SubExprs[SubExpr::Ready] = Ready;
     SubExprs[SubExpr::Suspend] = Suspend;
-    SubExprs[SubExpr::Continuation] = Continuation;
     SubExprs[SubExpr::Resume] = Resume;
   }
 
@@ -4559,7 +4643,6 @@ public:
     SubExprs[SubExpr::Awaiter] = Operand;
     SubExprs[SubExpr::Ready] = nullptr;
     SubExprs[SubExpr::Suspend] = nullptr;
-    SubExprs[SubExpr::Continuation] = nullptr;
     SubExprs[SubExpr::Resume] = nullptr;
   }
 
@@ -4567,7 +4650,6 @@ public:
     SubExprs[SubExpr::Awaiter] = nullptr;
     SubExprs[SubExpr::Ready] = nullptr;
     SubExprs[SubExpr::Suspend] = nullptr;
-    SubExprs[SubExpr::Continuation] = nullptr;
     SubExprs[SubExpr::Resume] = nullptr;
   }
 
@@ -4586,12 +4668,6 @@ public:
 
   Expr *getSuspendExpr() const {
     return static_cast<Expr*>(SubExprs[SubExpr::Suspend]);
-  }
-
-  OpaqueValueExpr *getSuspendOpaqueValue() const { return SuspendOpaqueValue; }
-
-  Expr *getContinuationExpr() const {
-    return static_cast<Expr*>(SubExprs[SubExpr::Continuation]);
   }
 
   Expr *getResumeExpr() const {
@@ -4624,13 +4700,11 @@ class CoawaitExpr : public CoroutineSuspendExpr {
 
 public:
   CoawaitExpr(SourceLocation CoawaitLoc, Expr *Awaiter, Expr *Ready,
-              Expr *Suspend, Expr *Continuation, Expr *Resume,
+              Expr *Suspend, Expr *Resume,
               OpaqueValueExpr *AwaiterOpaqueValue,
-              OpaqueValueExpr *SuspendOpaqueValue,
               bool IsImplicit = false)
       : CoroutineSuspendExpr(CoawaitExprClass, CoawaitLoc, Awaiter, Ready,
-                             Suspend, Continuation, Resume,
-                             AwaiterOpaqueValue, SuspendOpaqueValue) {
+                             Suspend, Resume, AwaiterOpaqueValue) {
   }
 
   CoawaitExpr(SourceLocation CoawaitLoc, QualType Ty, Expr *Operand,
@@ -4709,12 +4783,10 @@ class CoyieldExpr : public CoroutineSuspendExpr {
 
 public:
   CoyieldExpr(SourceLocation CoyieldLoc, Expr *Awaiter, Expr *Ready,
-              Expr *Suspend, Expr *Continuation, Expr *Resume,
-              OpaqueValueExpr *AwaiterOpaqueValue,
-              OpaqueValueExpr *SuspendOpaqueValue)
+              Expr *Suspend, Expr *Resume,
+              OpaqueValueExpr *AwaiterOpaqueValue)
       : CoroutineSuspendExpr(CoyieldExprClass, CoyieldLoc, Awaiter, Ready,
-                             Suspend, Continuation, Resume,
-                             AwaiterOpaqueValue, SuspendOpaqueValue) {}
+                             Suspend, Resume, AwaiterOpaqueValue) {}
   CoyieldExpr(SourceLocation CoyieldLoc, QualType Ty, Expr *Operand)
       : CoroutineSuspendExpr(CoyieldExprClass, CoyieldLoc, Ty, Operand) {}
   CoyieldExpr(EmptyShell Empty)

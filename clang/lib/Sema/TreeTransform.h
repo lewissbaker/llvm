@@ -7210,6 +7210,16 @@ TreeTransform<Derived>::TransformCoreturnStmt(CoreturnStmt *S) {
 
 template<typename Derived>
 ExprResult
+TreeTransform<Derived>::TransformCoroutineTailCallExpr(CoroutineTailCallExpr *E) {
+  // TODO: What should we be doing here?
+  // Calling TransformExpr() on E->getHandleExpr() and E->getInvokeExpr()?
+  // This expression should only have been generated once the promise-type
+  // was no longer a dependent type.
+  return E;
+}
+
+template<typename Derived>
+ExprResult
 TreeTransform<Derived>::TransformCoawaitExpr(CoawaitExpr *E) {
   ExprResult Result = getDerived().TransformInitializer(E->getOperand(),
                                                         /*NotCopyInit*/false);

@@ -4272,6 +4272,11 @@ recurse:
     mangleExpression(cast<CoawaitExpr>(E)->getOperand());
     break;
 
+  case Expr::CoroutineTailCallExprClass:
+    // FIXME: Is this right?
+    mangleExpression(cast<CoroutineTailCallExpr>(E)->getInvokeExpr());
+    break;
+
   case Expr::DependentCoawaitExprClass:
     // FIXME: Propose a non-vendor mangling.
     Out << "v18co_await";

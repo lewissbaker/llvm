@@ -441,6 +441,9 @@ public:
   Value *VisitGenericSelectionExpr(GenericSelectionExpr *GE) {
     return Visit(GE->getResultExpr());
   }
+  Value *VisitCoroutineTailCallExpr(CoroutineTailCallExpr *S) {
+    return CGF.EmitCoroutineTailCallExpr(*S).getScalarVal();
+  }
   Value *VisitCoawaitExpr(CoawaitExpr *S) {
     return CGF.EmitCoawaitExpr(*S).getScalarVal();
   }

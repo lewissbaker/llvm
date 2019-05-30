@@ -112,6 +112,10 @@ public:
   VisitSubstNonTypeTemplateParmExpr(SubstNonTypeTemplateParmExpr *PE) {
     return Visit(PE->getReplacement());
   }
+  ComplexPairTy VisitCoroutineTailCallExpr(CoroutineTailCallExpr *S) {
+    S->dump(CGF.getContext().getSourceManager());
+    llvm_unreachable("CoroutineTailCall can't have complex result type!");
+  }
   ComplexPairTy VisitCoawaitExpr(CoawaitExpr *S) {
     return CGF.EmitCoawaitExpr(*S).getComplexVal();
   }

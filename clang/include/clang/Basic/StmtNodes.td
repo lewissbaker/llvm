@@ -157,6 +157,7 @@ def LambdaExpr : DStmt<Expr>;
 def CXXFoldExpr : DStmt<Expr>;
 
 // C++ Coroutines TS expressions
+def CoroutineTailCallExpr : DStmt<Expr>;
 def CoroutineSuspendExpr : DStmt<Expr, 1>;
 def CoawaitExpr : DStmt<CoroutineSuspendExpr>;
 def DependentCoawaitExpr : DStmt<Expr>;

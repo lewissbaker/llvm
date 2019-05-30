@@ -157,7 +157,7 @@ static bool memberCallExpressionCanThrow(const Expr *E) {
 //  %where-to = call i8 @llvm.coro.suspend(...)
 //  switch i8 %where-to, label %coro.ret [ ; jump to epilogue to suspend
 //    i8 0, label %yield.ready   ; go here when resumed
-//    i8 1, label %yield.cleanup ; go here when destroyed
+//    i8 1, label %yield.cancel ; go here when cancelled
 //  ]
 //
 //  See llvm's docs/Coroutines.rst for more details.
@@ -181,7 +181,7 @@ static LValueOrRValue emitSuspendExpression(CodeGenFunction &CGF, CGCoroData &Co
   auto Prefix = buildSuspendPrefixStr(Coro, Kind);
   BasicBlock *ReadyBlock = CGF.createBasicBlock(Prefix + Twine(".ready"));
   BasicBlock *SuspendBlock = CGF.createBasicBlock(Prefix + Twine(".suspend"));
-  BasicBlock *CleanupBlock = CGF.createBasicBlock(Prefix + Twine(".cleanup"));
+  BasicBlock *CleanupBlock = CGF.createBasicBlock(Prefix + Twine(".cancel"));
 
   // If expression is ready, no need to suspend.
   CGF.EmitBranchOnBoolExpr(S.getReadyExpr(), ReadyBlock, SuspendBlock, 0);
@@ -195,20 +195,15 @@ static LValueOrRValue emitSuspendExpression(CodeGenFunction &CGF, CGCoroData &Co
   auto *SaveCall = Builder.CreateCall(CoroSave, {NullPtr});
 
   auto *Suspend = S.getSuspendExpr();
-  auto *Continuation = S.getContinuationExpr();
-  if (Continuation != nullptr) {
-    auto *SuspendOpaqueValue = S.getSuspendOpaqueValue();
-    assert(SuspendOpaqueValue != nullptr);
+  auto *SuspendTailCall = cast_or_null<CoroutineTailCallExpr>(Suspend);
+  if (SuspendTailCall != nullptr) {
+    assert(SuspendTailCall->getValueKind() == VK_RValue);
 
-    auto SuspendBinder =
-      CodeGenFunction::OpaqueValueMappingData::bind(CGF, SuspendOpaqueValue, Suspend);
-    auto UnbindOnExit = llvm::make_scope_exit([&] { SuspendBinder.unbind(CGF); });
-
-    auto *ContinuationRet = CGF.EmitScalarExpr(Continuation);
-    assert(
-      ContinuationRet != nullptr && ContinuationRet->getType()->isVoidTy() &&
-      "Invoking the continuation should always return void.");
-    (void)ContinuationRet;
+    // TODO: Handle lvalue-results of tail-call expressions for the case
+    // where the suspend-type of a coroutine is not void.
+    //
+    // TODO: Pass current function's ReturnValueSlot into EmitCoroutineTailCallExpr().
+    CGF.EmitCoroutineTailCallExpr(*SuspendTailCall);
   } else {
     auto *SuspendRet = CGF.EmitScalarExpr(Suspend);
     if (SuspendRet != nullptr && SuspendRet->getType()->isIntegerTy(1)) {
@@ -272,6 +267,22 @@ static LValueOrRValue emitSuspendExpression(CodeGenFunction &CGF, CGCoroData &Co
   return Res;
 }
 
+RValue CodeGenFunction::EmitCoroutineTailCallExpr(const CoroutineTailCallExpr &E) {
+  auto HandleBinder = CodeGenFunction::OpaqueValueMappingData::bind(
+      *this, E.getHandlePlaceholder(), E.getHandleExpr());
+  auto UnbindOnExit = llvm::make_scope_exit([&] { HandleBinder.unbind(*this); });
+  // TODO: Add the 'musttail' attribute to the generated 'call' expression.
+  return EmitCallExpr(E.getInvokeExpr());
+}
+
+LValue CodeGenFunction::EmitCoroutineTailCallExprLValue(const CoroutineTailCallExpr *E) {
+  auto HandleBinder = CodeGenFunction::OpaqueValueMappingData::bind(
+      *this, E->getHandlePlaceholder(), E->getHandleExpr());
+  auto UnbindOnExit = llvm::make_scope_exit([&] { HandleBinder.unbind(*this); });
+  // TODO: Add the 'musttail' attribute to the generated 'call' expression.
+  return EmitCallExprLValue(E->getInvokeExpr());
+}
+
 RValue CodeGenFunction::EmitCoawaitExpr(const CoawaitExpr &E,
                                         AggValueSlot aggSlot,
                                         bool ignoreResult) {
@@ -279,6 +290,7 @@ RValue CodeGenFunction::EmitCoawaitExpr(const CoawaitExpr &E,
                                AwaitKind::Normal, aggSlot,
                                ignoreResult, /*forLValue*/false).RV;
 }
+
 RValue CodeGenFunction::EmitCoyieldExpr(const CoyieldExpr &E,
                                         AggValueSlot aggSlot,
                                         bool ignoreResult) {
@@ -682,29 +694,22 @@ void CodeGenFunction::EmitCoroutineBody(const CoroutineBodyStmt &S) {
       emitBodyAndFallthrough(*this, S, S.getBody());
     }
 
-    // See if we need to generate final suspend.
-    const bool CanFallthrough = Builder.GetInsertBlock() != nullptr;
-    const bool HasCoreturns = CurCoro.Data->CoreturnCount > 0;
-    if (CanFallthrough || HasCoreturns) {
-      llvm::Function *CoroSave = CGM.getIntrinsic(llvm::Intrinsic::coro_save);
-      llvm::Function *CoroSuspend = CGM.getIntrinsic(llvm::Intrinsic::coro_suspend);
-      auto *CleanupBB = createBasicBlock("final.cleanup");
+    // Emit the final_suspend() tailcall.
+    llvm::Function *CoroSave = CGM.getIntrinsic(llvm::Intrinsic::coro_save);
+    llvm::Function *CoroSuspend = CGM.getIntrinsic(llvm::Intrinsic::coro_suspend);
+    auto *CleanupBB = createBasicBlock("final.cleanup");
 
-      EmitBlock(FinalBB);
-      auto *FinalSaveCall = Builder.CreateCall(CoroSave, {NullPtr});
-      EmitStmt(S.getFinalSuspendStmt());
-      auto *FinalSuspendResult = Builder.CreateCall(
-        CoroSuspend,
-        {FinalSaveCall, Builder.getInt1(true) /* IsFinalSuspend */});
-      auto *InitialSuspendSwitch = Builder.CreateSwitch(FinalSuspendResult, RetBB, 2);
-      InitialSuspendSwitch->addCase(Builder.getInt8(1), CleanupBB); // Destroy path.
+    EmitBlock(FinalBB);
+    auto *FinalSaveCall = Builder.CreateCall(CoroSave, {NullPtr});
+    EmitStmt(S.getFinalSuspendStmt());
+    auto *FinalSuspendResult = Builder.CreateCall(
+      CoroSuspend,
+      {FinalSaveCall, Builder.getInt1(true) /* IsFinalSuspend */});
+    auto *InitialSuspendSwitch = Builder.CreateSwitch(FinalSuspendResult, RetBB, 2);
+    InitialSuspendSwitch->addCase(Builder.getInt8(1), CleanupBB); // Destroy path.
 
-      EmitBlock(CleanupBB);
-      EmitBranchThroughCleanup(CurCoro.Data->CleanupJD);
-    } else {
-      // We don't need FinalBB. Emit it to make sure the block is deleted.
-      EmitBlock(FinalBB, /*IsFinished=*/true);
-    }
+    EmitBlock(CleanupBB);
+    EmitBranchThroughCleanup(CurCoro.Data->CleanupJD);
   }
 
   EmitBlock(RetBB);
