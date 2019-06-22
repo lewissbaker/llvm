@@ -11,6 +11,7 @@ generator<int> ints(int n) {
 int main() {
     for (int i : ints(10)) {
         printf("%i\n", i);
+        if (i == 7) break;
     }
     printf("done\n");
     return 0;

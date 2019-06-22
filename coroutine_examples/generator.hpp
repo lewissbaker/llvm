@@ -14,6 +14,7 @@ public:
     class promise_type {
     public:
         friend iterator;
+        friend generator<Ref, Value>;
 
         promise_type() noexcept {}
 
@@ -35,6 +36,7 @@ public:
         }
 
         auto done() noexcept {
+            sp_ = {};
             return std::experimental::noop_continuation();
         }
 
@@ -54,9 +56,7 @@ public:
             return {};
         }
 
-        void return_void() {
-            sp_ = {};
-        }
+        void return_void() {}
 
         void unhandled_exception() {
             sp_ = {};
@@ -86,6 +86,12 @@ public:
 
     ~generator() {
         if (coro_) {
+            auto& promise = coro_.promise();
+            if (promise.sp_) {
+                // Coroutine is not at final suspend point yet. Cancel it.
+                promise.sp_.set_done()();
+                assert(!promise.sp_);
+            }
             coro_.destroy();
         }
     }
