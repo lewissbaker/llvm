@@ -686,7 +686,7 @@ bool Sema::ActOnCoroutineBodyStart(Scope *SC, SourceLocation KWLoc,
   auto buildFinalSuspend = [&]() -> StmtResult {
     ExprResult Suspend =
         buildPromiseCall(*this, ScopeInfo->CoroutinePromise, Loc,
-                         "final_suspend", None);
+                         "done", None);
     if (Suspend.isInvalid())
       return StmtError();
 
