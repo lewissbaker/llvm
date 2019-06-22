@@ -2,14 +2,19 @@
 
 #include <experimental/coroutine>
 #include <iterator>
+#include <cassert>
 
 #include "manual_lifetime.hpp"
 
 template<typename Ref, typename Value = std::decay_t<Ref>>
 class generator {
 public:
+    class iterator;
+
     class promise_type {
     public:
+        friend iterator;
+
         promise_type() noexcept {}
 
         ~promise_type() noexcept {
@@ -23,29 +28,38 @@ public:
             }
         }
 
-        generator get_return_object() noexcept {
-            return generator{
-                std::experimental::coroutine_handle<promise_type>::from_promise(*this)
-            };
+        template<typename SuspendPointHandle>
+        generator get_return_object(SuspendPointHandle sp) noexcept {
+            sp_ = sp;
+            return generator{sp};
         }
 
-        std::experimental::suspend_always initial_suspend() noexcept {
-            return {};
+        auto done() noexcept {
+            return std::experimental::noop_continuation();
         }
 
-        std::experimental::suspend_always final_suspend() noexcept {
-            return {};
-        }
+        struct yield_awaiter {
+            bool await_ready() noexcept { return false; }
+            template<typename SuspendPointHandle>
+            auto await_suspend(SuspendPointHandle sp) noexcept {
+                sp.promise().sp_ = sp;
+                return std::experimental::noop_continuation();
+            }
+            void await_resume() noexcept {}
+        };
 
-        std::experimental::suspend_always yield_value(Ref ref)
+        yield_awaiter yield_value(Ref ref)
                 noexcept(std::is_nothrow_move_constructible_v<Ref>) {
             ref_.construct(std::move(ref));
             return {};
         }
 
-        void return_void() {}
+        void return_void() {
+            sp_ = {};
+        }
 
         void unhandled_exception() {
+            sp_ = {};
             throw;
         }
 
@@ -54,11 +68,17 @@ public:
         }
 
     private:
+        std::experimental::suspend_point_handle<
+            std::experimental::with_resume,
+            std::experimental::with_set_done> sp_;
         manual_lifetime<Ref> ref_;
         bool hasValue_ = false;
     };
 
-    using handle_t = std::experimental::coroutine_handle<promise_type>;
+    using handle_t = std::experimental::suspend_point_handle<
+        std::experimental::with_resume,
+        std::experimental::with_destroy,
+        std::experimental::with_promise<promise_type>>;
 
     generator(generator&& g) noexcept
     : coro_(std::exchange(g.coro_, {}))
@@ -82,39 +102,39 @@ public:
 
         iterator() noexcept {}
 
-        explicit iterator(handle_t coro) noexcept
-        : coro_(coro) {}
+        explicit iterator(promise_type& promise) noexcept
+        : promise_(promise) {}
 
         reference operator*() const {
-            return coro_.promise().get();
+            return promise_.get();
         }
 
         iterator& operator++() {
-            coro_.promise().clear_value();
-            coro_.resume();
+            promise_.clear_value();
+            promise_.sp_.resume()();
             return *this;
         }
 
         void operator++(int) {
-            coro_.promise().clear_value();
-            coro_.resume();
+            promise_.clear_value();
+            promise_.sp_.resume()();
         }
 
         bool operator==(sentinel) const noexcept {
-            return coro_.done();
+            return !promise_.sp_;
         }
 
-        bool operator!=(sentinel) const noexcept {
-            return !coro_.done();
+        bool operator!=(sentinel s) const noexcept {
+            return !operator==(s);
         }
 
     private:
-        handle_t coro_;
+        promise_type& promise_;
     };
 
     iterator begin() {
-        coro_.resume();
-        return iterator{coro_};
+        coro_.resume()();
+        return iterator{coro_.promise()};
     }
 
     sentinel end() {

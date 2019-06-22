@@ -9,27 +9,16 @@
 
 struct sync_wait_task {
     struct promise_type {
-        sync_wait_task get_return_object() noexcept {
-            return sync_wait_task{
-                std::experimental::coroutine_handle<promise_type>::from_promise(*this)};
+        template<typename Handle>
+        sync_wait_task get_return_object(Handle h) noexcept {
+            return sync_wait_task{h};
         }
 
-        std::experimental::suspend_always initial_suspend() {
-            return {};
-        }
-
-        auto final_suspend() noexcept {
-            struct awaiter {
-                bool await_ready() { return false; }
-                void await_suspend(std::experimental::coroutine_handle<promise_type> h) {
-                    auto& promise = h.promise();
-                    std::lock_guard lock{promise.mut_};
-                    promise.done_ = true;
-                    promise.cv_.notify_one();
-                }
-                void await_resume() {}
-            };
-            return awaiter{};
+        auto done() noexcept {
+            std::lock_guard lock{mut_};
+            done_ = true;
+            cv_.notify_one();
+            return std::experimental::noop_continuation();
         }
 
         void return_void() noexcept {}
@@ -53,7 +42,10 @@ struct sync_wait_task {
         std::exception_ptr error_;
     };
 
-    using handle_t = std::experimental::coroutine_handle<promise_type>;
+    using handle_t = std::experimental::suspend_point_handle<
+        std::experimental::with_resume,
+        std::experimental::with_destroy,
+        std::experimental::with_promise<promise_type>>;
 
     explicit sync_wait_task(handle_t coro) noexcept
     : coro_(coro) {}
@@ -69,7 +61,7 @@ struct sync_wait_task {
     }
 
     void wait() {
-        coro_.resume();
+        coro_.resume()();
         coro_.promise().wait();
     }
 

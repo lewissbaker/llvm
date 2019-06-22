@@ -24,7 +24,8 @@ private:
 
         bool await_ready() { return false; }
 
-        void await_suspend(std::experimental::coroutine_handle<> h) {
+        template<typename SuspendPointHandle>
+        void await_suspend(SuspendPointHandle h) {
             {
                 std::lock_guard lock{context_.mut_};
                 ++context_.activeThreadCount_;
@@ -33,7 +34,7 @@ private:
             try {
                 std::thread{[this, h]() mutable {
                     // Resume the coroutine.
-                    h.resume();
+                    h.resume()();
 
                     std::unique_lock lock{context_.mut_};
                     --context_.activeThreadCount_;
