@@ -196,7 +196,7 @@ public:
   llvm::SmallMapVector<ParmVarDecl *, Stmt *, 4> CoroutineParameterMoves;
 
   /// The final coroutine suspend points.
-  Stmt * CoroutineFinalSuspend;
+  Stmt * CoroutineFinalSuspend = nullptr;
 
   /// The stack of currently active compound stamement scopes in the
   /// function.
@@ -478,7 +478,7 @@ public:
 
   void setCoroutineFinalSuspend(Stmt *Final) {
     assert(Final && "suspend point cannot be null");
-    assert(CoroutineSuspends.first == nullptr && "suspend points already set");
+    assert(CoroutineFinalSuspend == nullptr && "final suspend point already set");
     NeedsCoroutineSuspend = false;
     CoroutineFinalSuspend = Final;
   }
