@@ -195,7 +195,7 @@ static LValueOrRValue emitSuspendExpression(CodeGenFunction &CGF, CGCoroData &Co
   auto *SaveCall = Builder.CreateCall(CoroSave, {NullPtr});
 
   auto *Suspend = S.getSuspendExpr();
-  auto *SuspendTailCall = cast_or_null<CoroutineTailCallExpr>(Suspend);
+  auto *SuspendTailCall = dyn_cast_or_null<CoroutineTailCallExpr>(Suspend);
   if (SuspendTailCall != nullptr) {
     assert(SuspendTailCall->getValueKind() == VK_RValue);
 
