@@ -7095,10 +7095,6 @@ TreeTransform<Derived>::TransformCoroutineBodyStmt(CoroutineBodyStmt *S) {
          ScopeInfo->CoroutineFinalSuspend == nullptr &&
          "expected clean scope info");
 
-  // Set that we have (possibly-invalid) suspend points before we do anything
-  // that may fail.
-  ScopeInfo->setNeedsCoroutineSuspend(false);
-
   // The new CoroutinePromise object needs to be built and put into the current
   // FunctionScopeInfo before any transformations or rebuilding occurs.
   if (!SemaRef.buildCoroutineParameterMoves(FD->getLocation()))
@@ -7109,14 +7105,6 @@ TreeTransform<Derived>::TransformCoroutineBodyStmt(CoroutineBodyStmt *S) {
   getDerived().transformedLocalDecl(S->getPromiseDecl(), Promise);
   ScopeInfo->CoroutinePromise = Promise;
 
-  // Transform the implicit coroutine statements we built during the initial
-  // parse.
-  StmtResult FinalSuspend =
-      getDerived().TransformStmt(S->getFinalSuspendStmt());
-  if (FinalSuspend.isInvalid())
-    return StmtError();
-  ScopeInfo->setCoroutineFinalSuspend(FinalSuspend.get());
-  assert(isa<Expr>(FinalSuspend.get()));
 
   StmtResult BodyRes = getDerived().TransformStmt(S->getBody());
   if (BodyRes.isInvalid())
@@ -7143,6 +7131,13 @@ TreeTransform<Derived>::TransformCoroutineBodyStmt(CoroutineBodyStmt *S) {
     if (!Builder.buildDependentStatements())
       return StmtError();
   } else {
+    if (auto* FinalSuspend = S->getFinalSuspendStmt()) {
+      StmtResult Res = getDerived().TransformStmt(FinalSuspend);
+      if (Res.isInvalid())
+        return StmtError();
+      Builder.FinalSuspend = Res.get();
+    }
+
     if (auto *OnFallthrough = S->getFallthroughHandler()) {
       StmtResult Res = getDerived().TransformStmt(OnFallthrough);
       if (Res.isInvalid())

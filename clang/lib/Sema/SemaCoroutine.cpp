@@ -413,7 +413,7 @@ static ExprResult buildMemberCall(Sema &S, Expr *Base, SourceLocation Loc,
 static CoroutineTailCallExpr* maybeTailCall(Sema &S, QualType RetType, Expr *E,
                                             SourceLocation Loc) {
   if (RetType->isReferenceType())
-    return nullptr;
+      return nullptr;
   Type const *T = RetType.getTypePtr();
   if (!T->isClassType() && !T->isStructureType())
     return nullptr;
@@ -669,48 +669,6 @@ bool Sema::ActOnCoroutineBodyStart(Scope *SC, SourceLocation KWLoc,
                                    StringRef Keyword) {
   if (!checkCoroutineContext(*this, KWLoc, Keyword))
     return false;
-  auto *ScopeInfo = getCurFunction();
-  assert(ScopeInfo->CoroutinePromise);
-
-  // If we have existing coroutine statements then we have already built
-  // the initial and final suspend points.
-  if (!ScopeInfo->NeedsCoroutineSuspend)
-    return true;
-
-  ScopeInfo->setNeedsCoroutineSuspend(false);
-
-  auto *Fn = cast<FunctionDecl>(CurContext);
-  SourceLocation Loc = Fn->getLocation();
-
-  // Build the final suspend point
-  auto buildFinalSuspend = [&]() -> StmtResult {
-    ExprResult Suspend =
-        buildPromiseCall(*this, ScopeInfo->CoroutinePromise, Loc,
-                         "done", None);
-    if (Suspend.isInvalid())
-      return StmtError();
-
-    auto* TailCall = maybeTailCall(*this, Suspend.get()->getType(), Suspend.get(), Loc);
-    if (TailCall == nullptr)  {
-      Diag(Loc, diag::note_coroutine_promise_final_suspend_implicitly_required);
-      Diag(KWLoc, diag::note_declared_coroutine_here) << Keyword;
-      return StmtError();
-    }
-
-    Suspend = ActOnFinishFullExpr(TailCall, /*DiscardedValue*/true);
-    if (Suspend.isInvalid()) {
-      Diag(Loc, diag::note_coroutine_promise_final_suspend_implicitly_required);
-      Diag(KWLoc, diag::note_declared_coroutine_here) << Keyword;
-      return StmtError();
-    }
-    return cast<Stmt>(Suspend.get());
-  };
-
-  StmtResult FinalSuspend = buildFinalSuspend();
-  if (FinalSuspend.isInvalid())
-    return false;
-
-  ScopeInfo->setCoroutineFinalSuspend(FinalSuspend.get());
 
   return true;
 }
@@ -1083,7 +1041,7 @@ CoroutineStmtBuilder::CoroutineStmtBuilder(Sema &S, FunctionDecl &FD,
     PromiseRecordDecl = Fn.CoroutinePromise->getType()->getAsCXXRecordDecl();
     assert(PromiseRecordDecl && "Type should have already been checked");
   }
-  this->IsValid = makePromiseStmt() && makeFinalSuspend();
+  this->IsValid = makePromiseStmt();
 }
 
 bool CoroutineStmtBuilder::buildStatements() {
@@ -1097,7 +1055,8 @@ bool CoroutineStmtBuilder::buildDependentStatements() {
   assert(this->IsValid && "coroutine already invalid");
   assert(!this->IsPromiseDependentType &&
          "coroutine cannot have a dependent promise type");
-  this->IsValid = makeReturnObject() && makeOnException() && makeOnFallthrough() &&
+  this->IsValid = makeReturnObject() && makeFinalSuspend() &&
+                  makeOnException() && makeOnFallthrough() &&
                   makeGroDeclAndReturnStmt() && makeReturnOnAllocFailure() &&
                   makeNewAndDeleteExpr();
   return this->IsValid;
@@ -1118,7 +1077,44 @@ bool CoroutineStmtBuilder::makePromiseStmt() {
 bool CoroutineStmtBuilder::makeFinalSuspend() {
   if (Fn.hasInvalidCoroutineSuspend())
     return false;
+  assert(Fn.CoroutinePromise);
+
+  // If we have existing coroutine statements then we have already built
+  // the final suspend points.
+  if (!Fn.NeedsCoroutineSuspend) {
+    return true;
+  }
+
+  Fn.setNeedsCoroutineSuspend(false);
+
+  // Build the call to promise.done() for final suspend-point.
+
+  ExprResult Suspend =
+    buildPromiseCall(S, Fn.CoroutinePromise, Loc, "done", None);
+  if (Suspend.isInvalid()) {
+    return false;
+  }
+
+  auto* TailCall = maybeTailCall(S, Suspend.get()->getType(), Suspend.get(), Loc);
+  if (TailCall == nullptr)  {
+    auto Keyword = Fn.getFirstCoroutineStmtKeyword();
+    S.Diag(Loc, diag::note_coroutine_promise_final_suspend_implicitly_required);
+    S.Diag(Fn.FirstCoroutineStmtLoc, diag::note_declared_coroutine_here) << Keyword;
+    return false;
+  }
+
+  Suspend = S.ActOnFinishFullExpr(TailCall, /*DiscardedValue*/true);
+  if (Suspend.isInvalid()) {
+    auto Keyword = Fn.getFirstCoroutineStmtKeyword();
+    S.Diag(Loc, diag::note_coroutine_promise_final_suspend_implicitly_required);
+    S.Diag(Fn.FirstCoroutineStmtLoc, diag::note_declared_coroutine_here) << Keyword;
+    return false;
+  }
+
+  Fn.setCoroutineFinalSuspend(Suspend.get());
+
   this->FinalSuspend = cast<Expr>(Fn.CoroutineFinalSuspend);
+
   return true;
 }
 
