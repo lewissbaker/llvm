@@ -320,14 +320,12 @@ class CoroutineBodyStmt final
   enum SubStmt {
     Body,          ///< The body of the coroutine.
     Promise,       ///< The promise statement.
-    InitSuspend,   ///< The initial suspend statement, run before the body.
-    FinalSuspend,  ///< The final suspend statement, run after the body.
+    FinalSuspend,  ///< The call to promise.final_suspend(), run after the body.
     OnException,   ///< Handler for exceptions thrown in the body.
     OnFallthrough, ///< Handler for control flow falling off the body.
     Allocate,      ///< Coroutine frame memory allocation.
     Deallocate,    ///< Coroutine frame memory deallocation.
     ReturnValue,   ///< Return value for thunk function: p.get_return_object().
-    ResultDecl,    ///< Declaration holding the result of get_return_object.
     ReturnStmt,    ///< Return statement for the thunk function.
     ReturnStmtOnAllocFailure, ///< Return statement if allocation failed.
     FirstParamMove ///< First offset for move construction of parameter copies.
@@ -347,14 +345,12 @@ public:
   struct CtorArgs {
     Stmt *Body = nullptr;
     Stmt *Promise = nullptr;
-    Expr *InitialSuspend = nullptr;
-    Expr *FinalSuspend = nullptr;
+    Stmt *FinalSuspend = nullptr;
     Stmt *OnException = nullptr;
     Stmt *OnFallthrough = nullptr;
     Expr *Allocate = nullptr;
     Expr *Deallocate = nullptr;
     Expr *ReturnValue = nullptr;
-    Stmt *ResultDecl = nullptr;
     Stmt *ReturnStmt = nullptr;
     Stmt *ReturnStmtOnAllocFailure = nullptr;
     ArrayRef<Stmt *> ParamMoves;
@@ -386,9 +382,7 @@ public:
     return cast<VarDecl>(cast<DeclStmt>(getPromiseDeclStmt())->getSingleDecl());
   }
 
-  Stmt *getInitSuspendStmt() const {
-    return getStoredStmts()[SubStmt::InitSuspend];
-  }
+  // This should be a CoroutineTailCallExpr
   Stmt *getFinalSuspendStmt() const {
     return getStoredStmts()[SubStmt::FinalSuspend];
   }
@@ -406,10 +400,10 @@ public:
   Expr *getDeallocate() const {
     return cast_or_null<Expr>(getStoredStmts()[SubStmt::Deallocate]);
   }
-  Expr *getReturnValueInit() const {
-    return cast<Expr>(getStoredStmts()[SubStmt::ReturnValue]);
-  }
-  Stmt *getResultDecl() const { return getStoredStmts()[SubStmt::ResultDecl]; }
+  // Expr *getReturnValueInit() const {
+  //   return cast<Expr>(getStoredStmts()[SubStmt::ReturnValue]);
+  // }
+  // Stmt *getResultDecl() const { return getStoredStmts()[SubStmt::ResultDecl]; }
   Stmt *getReturnStmt() const { return getStoredStmts()[SubStmt::ReturnStmt]; }
   Stmt *getReturnStmtOnAllocFailure() const {
     return getStoredStmts()[SubStmt::ReturnStmtOnAllocFailure];

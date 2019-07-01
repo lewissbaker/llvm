@@ -2202,6 +2202,10 @@ void StmtPrinter::VisitCoreturnStmt(CoreturnStmt *S) {
   OS << ";";
 }
 
+void StmtPrinter::VisitCoroutineTailCallExpr(CoroutineTailCallExpr *S) {
+  // FIXME: What should happen here?
+}
+
 void StmtPrinter::VisitCoawaitExpr(CoawaitExpr *S) {
   OS << "co_await ";
   PrintExpr(S->getOperand());

@@ -863,16 +863,6 @@ protected:
     SourceLocation NameLoc;
   };
 
-  //===--- C++ Coroutines TS bitfields classes ---===//
-
-  class CoawaitExprBitfields {
-    friend class CoawaitExpr;
-
-    unsigned : NumExprBits;
-
-    unsigned IsImplicit : 1;
-  };
-
   //===--- Obj-C Expression bitfields classes ---===//
 
   class ObjCIndirectCopyRestoreExprBitfields {
@@ -958,9 +948,6 @@ protected:
     UnresolvedMemberExprBitfields UnresolvedMemberExprBits;
     CXXNoexceptExprBitfields CXXNoexceptExprBits;
     SubstNonTypeTemplateParmExprBitfields SubstNonTypeTemplateParmExprBits;
-
-    // C++ Coroutines TS expressions
-    CoawaitExprBitfields CoawaitBits;
 
     // Obj-C Expressions
     ObjCIndirectCopyRestoreExprBitfields ObjCIndirectCopyRestoreExprBits;

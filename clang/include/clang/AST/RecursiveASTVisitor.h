@@ -2605,6 +2605,11 @@ DEF_TRAVERSE_STMT(CoreturnStmt, {
     ShouldVisitChildren = false;
   }
 })
+DEF_TRAVERSE_STMT(CoroutineTailCallExpr, {
+  if (!getDerived().shouldVisitImplicitCode()) {
+    ShouldVisitChildren = false;
+  }
+})
 DEF_TRAVERSE_STMT(CoawaitExpr, {
   if (!getDerived().shouldVisitImplicitCode()) {
     TRY_TO_TRAVERSE_OR_ENQUEUE_STMT(S->getOperand());

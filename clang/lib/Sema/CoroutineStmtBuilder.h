@@ -54,7 +54,7 @@ public:
 
 private:
   bool makePromiseStmt();
-  bool makeInitialAndFinalSuspend();
+  bool makeFinalSuspend();
   bool makeNewAndDeleteExpr();
   bool makeOnFallthrough();
   bool makeOnException();

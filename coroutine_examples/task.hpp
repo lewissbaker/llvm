@@ -18,21 +18,11 @@ public:
         clear();
     }
 
-    task<T> get_return_object() noexcept;
+    template<typename Handle>
+    task<T> get_return_object(Handle h) noexcept;
 
-    std::experimental::suspend_always initial_suspend() {
-        return {};
-    }
-
-    auto final_suspend() noexcept {
-        struct awaiter {
-            bool await_ready() noexcept { return false; }
-            auto await_suspend(std::experimental::coroutine_handle<task_promise> h) noexcept {
-                return h.promise().continuation_;
-            }
-            void await_resume() noexcept {}
-        };
-        return awaiter{};
+    auto done() noexcept {
+        return continuation_;
     }
 
     template<
@@ -41,6 +31,15 @@ public:
     void return_value(U&& value) {
         clear();
         value_.construct((U&&)value);
+        state_ = state_t::value;
+    }
+
+    template<
+        typename U = T,
+        std::enable_if_t<std::is_void_v<U>, int> = 0>
+    void return_void() noexcept {
+        clear();
+        value_.construct();
         state_ = state_t::value;
     }
 
@@ -68,7 +67,7 @@ private:
         }
     }
 
-    std::experimental::coroutine_handle<> continuation_;
+    std::experimental::continuation_handle continuation_;
     enum class state_t { empty, value, error };
     state_t state_ = state_t::empty;
     union {
@@ -77,75 +76,15 @@ private:
     };
 };
 
-template<>
-class task_promise<void> {
-public:
-    task_promise() noexcept {}
-
-    ~task_promise() {
-        clear();
-    }
-
-    task<void> get_return_object() noexcept;
-
-    std::experimental::suspend_always initial_suspend() {
-        return {};
-    }
-
-    auto final_suspend() {
-        struct awaiter {
-            bool await_ready() { return false; }
-            auto await_suspend(std::experimental::coroutine_handle<task_promise> h) {
-                return h.promise().continuation_;
-            }
-            void await_resume() {}
-        };
-        return awaiter{};
-    }
-
-    void return_void() {
-        clear();
-        value_.construct();
-        state_ = state_t::value;
-    }
-
-    void unhandled_exception() noexcept {
-        clear();
-        error_.construct(std::current_exception());
-        state_ = state_t::error;
-    }
-
-    void get() {
-        if (state_ == state_t::error) {
-            std::rethrow_exception(std::move(error_).get());
-        }
-    }
-
-private:
-    friend class task<void>;
-
-    void clear() noexcept {
-        switch (std::exchange(state_, state_t::empty)) {
-        case state_t::empty: break;
-        case state_t::error: error_.destruct(); break;
-        case state_t::value: value_.destruct(); break;
-        }
-    }
-
-    std::experimental::coroutine_handle<> continuation_;
-    enum class state_t { empty, value, error };
-    state_t state_ = state_t::empty;
-    union {
-        manual_lifetime<void> value_;
-        manual_lifetime<std::exception_ptr> error_;
-    };
-};
 
 template<typename T>
 class task {
 public:
     using promise_type = task_promise<T>;
-    using handle_t = std::experimental::coroutine_handle<promise_type>;
+    using handle_t = std::experimental::suspend_point_handle<
+        std::experimental::with_resume,
+        std::experimental::with_destroy,
+        std::experimental::with_promise<promise_type>>;
 
     explicit task(handle_t h) noexcept
     : coro_(h)
@@ -161,23 +100,28 @@ public:
         }
     }
 
+private:
+    struct awaiter {
+    public:
+        explicit awaiter(handle_t coro) : coro_(coro) {}
+        bool await_ready() noexcept {
+            return false;
+        }
+        template<typename Handle>
+        auto await_suspend(Handle h) noexcept {
+            coro_.promise().continuation_ = h.resume();
+            return coro_.resume();
+        }
+        T await_resume() {
+            return coro_.promise().get();
+        }
+    private:
+        handle_t coro_;
+    };
+
+public:
+
     auto operator co_await() && noexcept {
-        struct awaiter {
-        public:
-            explicit awaiter(handle_t coro) : coro_(coro) {}
-            bool await_ready() noexcept {
-                return false;
-            }
-            auto await_suspend(std::experimental::coroutine_handle<> h) noexcept {
-                coro_.promise().continuation_ = h;
-                return coro_;
-            }
-            T await_resume() {
-                return coro_.promise().get();
-            }
-        private:
-            handle_t coro_;
-        };
         return awaiter{coro_};
     }
 
@@ -186,15 +130,7 @@ private:
 };
 
 template<typename T>
-task<T> task_promise<T>::get_return_object() noexcept {
-    return task<T>{
-        std::experimental::coroutine_handle<task_promise<T>>::from_promise(*this)
-        };
-}
-
-inline
-task<void> task_promise<void>::get_return_object() noexcept {
-    return task<void>{
-        std::experimental::coroutine_handle<task_promise<void>>::from_promise(*this)
-        };
+template<typename Handle>
+task<T> task_promise<T>::get_return_object(Handle h) noexcept {
+    return task<T>{h};
 }

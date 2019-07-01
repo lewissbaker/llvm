@@ -152,8 +152,8 @@ public:
   bool ObjCWarnForNoInitDelegation : 1;
 
   /// True only when this function has not already built, or attempted
-  /// to build, the initial and final coroutine suspend points
-  bool NeedsCoroutineSuspends : 1;
+  /// to build, the final coroutine suspend point
+  bool NeedsCoroutineSuspend : 1;
 
   /// An enumeration represeting the kind of the first coroutine statement
   /// in the function. One of co_return, co_await, or co_yield.
@@ -195,8 +195,8 @@ public:
   /// to the coroutine frame, and their move statements.
   llvm::SmallMapVector<ParmVarDecl *, Stmt *, 4> CoroutineParameterMoves;
 
-  /// The initial and final coroutine suspend points.
-  std::pair<Stmt *, Stmt *> CoroutineSuspends;
+  /// The final coroutine suspend points.
+  Stmt * CoroutineFinalSuspend = nullptr;
 
   /// The stack of currently active compound stamement scopes in the
   /// function.
@@ -368,7 +368,7 @@ public:
         HasFallthroughStmt(false), HasPotentialAvailabilityViolations(false),
         ObjCShouldCallSuper(false), ObjCIsDesignatedInit(false),
         ObjCWarnForNoDesignatedInitChain(false), ObjCIsSecondaryInit(false),
-        ObjCWarnForNoInitDelegation(false), NeedsCoroutineSuspends(true),
+        ObjCWarnForNoInitDelegation(false), NeedsCoroutineSuspend(true),
         ErrorTrap(Diag) {}
 
   virtual ~FunctionScopeInfo();
@@ -466,22 +466,21 @@ public:
     };
   }
 
-  void setNeedsCoroutineSuspends(bool value = true) {
-    assert((!value || CoroutineSuspends.first == nullptr) &&
+  void setNeedsCoroutineSuspend(bool value = true) {
+    assert((!value || CoroutineFinalSuspend == nullptr) &&
             "we already have valid suspend points");
-    NeedsCoroutineSuspends = value;
+    NeedsCoroutineSuspend = value;
   }
 
-  bool hasInvalidCoroutineSuspends() const {
-    return !NeedsCoroutineSuspends && CoroutineSuspends.first == nullptr;
+  bool hasInvalidCoroutineSuspend() const {
+    return !NeedsCoroutineSuspend && CoroutineFinalSuspend == nullptr;
   }
 
-  void setCoroutineSuspends(Stmt *Initial, Stmt *Final) {
-    assert(Initial && Final && "suspend points cannot be null");
-    assert(CoroutineSuspends.first == nullptr && "suspend points already set");
-    NeedsCoroutineSuspends = false;
-    CoroutineSuspends.first = Initial;
-    CoroutineSuspends.second = Final;
+  void setCoroutineFinalSuspend(Stmt *Final) {
+    assert(Final && "suspend point cannot be null");
+    assert(CoroutineFinalSuspend == nullptr && "final suspend point already set");
+    NeedsCoroutineSuspend = false;
+    CoroutineFinalSuspend = Final;
   }
 
   /// Clear out the information in this function scope, making it

@@ -9383,9 +9383,8 @@ def err_coroutine_promise_requires_return_function : Error<
   "the coroutine promise type %0 must declare either 'return_value' or 'return_void'">;
 def note_coroutine_promise_implicit_await_transform_required_here : Note<
   "call to 'await_transform' implicitly required by 'co_await' here">;
-def note_coroutine_promise_suspend_implicitly_required : Note<
-  "call to '%select{initial_suspend|final_suspend}0' implicitly "
-  "required by the %select{initial suspend point|final suspend point}0">;
+def note_coroutine_promise_final_suspend_implicitly_required : Note<
+  "call to 'final_suspend' implicitly required by the final suspend point">;
 def err_coroutine_promise_unhandled_exception_required : Error<
   "%0 is required to declare the member 'unhandled_exception()'">;
 def warn_coroutine_promise_unhandled_exception_required_with_exceptions : Warning<

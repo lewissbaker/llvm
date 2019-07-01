@@ -1176,6 +1176,7 @@ CanThrowResult Sema::canThrow(const Expr *E) {
   case Expr::ConditionalOperatorClass:
   case Expr::CompoundLiteralExprClass:
   case Expr::CoyieldExprClass:
+  case Expr::CoroutineTailCallExprClass:
   case Expr::CXXConstCastExprClass:
   case Expr::CXXReinterpretCastExprClass:
   case Expr::CXXStdInitializerListExprClass:

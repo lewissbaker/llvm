@@ -1407,9 +1407,8 @@ public:
   ///
   /// By default, performs semantic analysis to build the new expression.
   /// Subclasses may override this routine to provide different behavior.
-  ExprResult RebuildCoawaitExpr(SourceLocation CoawaitLoc, Expr *Result,
-                                bool IsImplicit) {
-    return getSema().BuildResolvedCoawaitExpr(CoawaitLoc, Result, IsImplicit);
+  ExprResult RebuildCoawaitExpr(SourceLocation CoawaitLoc, Expr *Result) {
+    return getSema().BuildResolvedCoawaitExpr(CoawaitLoc, Result);
   }
 
   /// Build a new co_await expression.
@@ -7091,15 +7090,10 @@ StmtResult
 TreeTransform<Derived>::TransformCoroutineBodyStmt(CoroutineBodyStmt *S) {
   auto *ScopeInfo = SemaRef.getCurFunction();
   auto *FD = cast<FunctionDecl>(SemaRef.CurContext);
-  assert(FD && ScopeInfo && !ScopeInfo->CoroutinePromise &&
-         ScopeInfo->NeedsCoroutineSuspends &&
-         ScopeInfo->CoroutineSuspends.first == nullptr &&
-         ScopeInfo->CoroutineSuspends.second == nullptr &&
+  assert(FD && ScopeInfo && ScopeInfo->CoroutinePromise == nullptr &&
+         ScopeInfo->NeedsCoroutineSuspend &&
+         ScopeInfo->CoroutineFinalSuspend == nullptr &&
          "expected clean scope info");
-
-  // Set that we have (possibly-invalid) suspend points before we do anything
-  // that may fail.
-  ScopeInfo->setNeedsCoroutineSuspends(false);
 
   // The new CoroutinePromise object needs to be built and put into the current
   // FunctionScopeInfo before any transformations or rebuilding occurs.
@@ -7111,17 +7105,6 @@ TreeTransform<Derived>::TransformCoroutineBodyStmt(CoroutineBodyStmt *S) {
   getDerived().transformedLocalDecl(S->getPromiseDecl(), Promise);
   ScopeInfo->CoroutinePromise = Promise;
 
-  // Transform the implicit coroutine statements we built during the initial
-  // parse.
-  StmtResult InitSuspend = getDerived().TransformStmt(S->getInitSuspendStmt());
-  if (InitSuspend.isInvalid())
-    return StmtError();
-  StmtResult FinalSuspend =
-      getDerived().TransformStmt(S->getFinalSuspendStmt());
-  if (FinalSuspend.isInvalid())
-    return StmtError();
-  ScopeInfo->setCoroutineSuspends(InitSuspend.get(), FinalSuspend.get());
-  assert(isa<Expr>(InitSuspend.get()) && isa<Expr>(FinalSuspend.get()));
 
   StmtResult BodyRes = getDerived().TransformStmt(S->getBody());
   if (BodyRes.isInvalid())
@@ -7131,13 +7114,13 @@ TreeTransform<Derived>::TransformCoroutineBodyStmt(CoroutineBodyStmt *S) {
   if (Builder.isInvalid())
     return StmtError();
 
-  Expr *ReturnObject = S->getReturnValueInit();
-  assert(ReturnObject && "the return object is expected to be valid");
-  ExprResult Res = getDerived().TransformInitializer(ReturnObject,
-                                                     /*NoCopyInit*/ false);
-  if (Res.isInvalid())
-    return StmtError();
-  Builder.ReturnValue = Res.get();
+  // Expr *ReturnObject = S->getReturnValueInit();
+  // assert(ReturnObject && "the return object is expected to be valid");
+  // ExprResult Res = getDerived().TransformInitializer(ReturnObject,
+  //                                                    /*NoCopyInit*/ false);
+  // if (Res.isInvalid())
+  //   return StmtError();
+  // Builder.ReturnValue = Res.get();
 
   if (S->hasDependentPromiseType()) {
     assert(!Promise->getType()->isDependentType() &&
@@ -7148,6 +7131,13 @@ TreeTransform<Derived>::TransformCoroutineBodyStmt(CoroutineBodyStmt *S) {
     if (!Builder.buildDependentStatements())
       return StmtError();
   } else {
+    if (auto* FinalSuspend = S->getFinalSuspendStmt()) {
+      StmtResult Res = getDerived().TransformStmt(FinalSuspend);
+      if (Res.isInvalid())
+        return StmtError();
+      Builder.FinalSuspend = Res.get();
+    }
+
     if (auto *OnFallthrough = S->getFallthroughHandler()) {
       StmtResult Res = getDerived().TransformStmt(OnFallthrough);
       if (Res.isInvalid())
@@ -7182,11 +7172,11 @@ TreeTransform<Derived>::TransformCoroutineBodyStmt(CoroutineBodyStmt *S) {
       return StmtError();
     Builder.Deallocate = DeallocRes.get();
 
-    assert(S->getResultDecl() && "ResultDecl must already be built");
-    StmtResult ResultDecl = getDerived().TransformStmt(S->getResultDecl());
-    if (ResultDecl.isInvalid())
-      return StmtError();
-    Builder.ResultDecl = ResultDecl.get();
+    // assert(S->getResultDecl() && "ResultDecl must already be built");
+    // StmtResult ResultDecl = getDerived().TransformStmt(S->getResultDecl());
+    // if (ResultDecl.isInvalid())
+    //   return StmtError();
+    // Builder.ResultDecl = ResultDecl.get();
 
     if (auto *ReturnStmt = S->getReturnStmt()) {
       StmtResult Res = getDerived().TransformStmt(ReturnStmt);
@@ -7215,6 +7205,16 @@ TreeTransform<Derived>::TransformCoreturnStmt(CoreturnStmt *S) {
 
 template<typename Derived>
 ExprResult
+TreeTransform<Derived>::TransformCoroutineTailCallExpr(CoroutineTailCallExpr *E) {
+  // TODO: What should we be doing here?
+  // Calling TransformExpr() on E->getHandleExpr() and E->getInvokeExpr()?
+  // This expression should only have been generated once the promise-type
+  // was no longer a dependent type.
+  return E;
+}
+
+template<typename Derived>
+ExprResult
 TreeTransform<Derived>::TransformCoawaitExpr(CoawaitExpr *E) {
   ExprResult Result = getDerived().TransformInitializer(E->getOperand(),
                                                         /*NotCopyInit*/false);
@@ -7223,8 +7223,7 @@ TreeTransform<Derived>::TransformCoawaitExpr(CoawaitExpr *E) {
 
   // Always rebuild; we don't know if this needs to be injected into a new
   // context or if the promise type has changed.
-  return getDerived().RebuildCoawaitExpr(E->getKeywordLoc(), Result.get(),
-                                         E->isImplicit());
+  return getDerived().RebuildCoawaitExpr(E->getKeywordLoc(), Result.get());
 }
 
 template <typename Derived>

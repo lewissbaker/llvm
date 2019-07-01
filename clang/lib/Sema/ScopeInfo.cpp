@@ -43,9 +43,8 @@ void FunctionScopeInfo::Clear() {
   FirstCoroutineStmtLoc = SourceLocation();
   CoroutinePromise = nullptr;
   CoroutineParameterMoves.clear();
-  NeedsCoroutineSuspends = true;
-  CoroutineSuspends.first = nullptr;
-  CoroutineSuspends.second = nullptr;
+  NeedsCoroutineSuspend = true;
+  CoroutineFinalSuspend = nullptr;
 
   SwitchStack.clear();
   Returns.clear();

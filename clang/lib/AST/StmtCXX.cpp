@@ -111,14 +111,12 @@ CoroutineBodyStmt::CoroutineBodyStmt(CoroutineBodyStmt::CtorArgs const &Args)
   Stmt **SubStmts = getStoredStmts();
   SubStmts[CoroutineBodyStmt::Body] = Args.Body;
   SubStmts[CoroutineBodyStmt::Promise] = Args.Promise;
-  SubStmts[CoroutineBodyStmt::InitSuspend] = Args.InitialSuspend;
   SubStmts[CoroutineBodyStmt::FinalSuspend] = Args.FinalSuspend;
   SubStmts[CoroutineBodyStmt::OnException] = Args.OnException;
   SubStmts[CoroutineBodyStmt::OnFallthrough] = Args.OnFallthrough;
   SubStmts[CoroutineBodyStmt::Allocate] = Args.Allocate;
   SubStmts[CoroutineBodyStmt::Deallocate] = Args.Deallocate;
   SubStmts[CoroutineBodyStmt::ReturnValue] = Args.ReturnValue;
-  SubStmts[CoroutineBodyStmt::ResultDecl] = Args.ResultDecl;
   SubStmts[CoroutineBodyStmt::ReturnStmt] = Args.ReturnStmt;
   SubStmts[CoroutineBodyStmt::ReturnStmtOnAllocFailure] =
       Args.ReturnStmtOnAllocFailure;

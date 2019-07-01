@@ -3192,6 +3192,7 @@ bool Expr::HasSideEffects(const ASTContext &Ctx,
   case CXXThrowExprClass:
   case CXXNewExprClass:
   case CXXDeleteExprClass:
+  case CoroutineTailCallExprClass:
   case CoawaitExprClass:
   case DependentCoawaitExprClass:
   case CoyieldExprClass:

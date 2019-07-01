@@ -2882,6 +2882,8 @@ public:
 
   void EmitCoroutineBody(const CoroutineBodyStmt &S);
   void EmitCoreturnStmt(const CoreturnStmt &S);
+  RValue EmitCoroutineTailCallExpr(const CoroutineTailCallExpr &E);
+  LValue EmitCoroutineTailCallExprLValue(const CoroutineTailCallExpr *E);
   RValue EmitCoawaitExpr(const CoawaitExpr &E,
                          AggValueSlot aggSlot = AggValueSlot::ignored(),
                          bool ignoreResult = false);

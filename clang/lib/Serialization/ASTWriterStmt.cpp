@@ -357,17 +357,23 @@ void ASTStmtWriter::VisitCoreturnStmt(CoreturnStmt *S) {
   Code = serialization::STMT_CORETURN;
 }
 
+void ASTStmtWriter::VisitCoroutineTailCallExpr(CoroutineTailCallExpr *E) {
+  VisitExpr(E);
+  for (Stmt *S : E->children())
+    Record.AddStmt(S);
+  Record.AddStmt(E->getHandlePlaceholder());
+}
+
 void ASTStmtWriter::VisitCoroutineSuspendExpr(CoroutineSuspendExpr *E) {
   VisitExpr(E);
   Record.AddSourceLocation(E->getKeywordLoc());
   for (Stmt *S : E->children())
     Record.AddStmt(S);
-  Record.AddStmt(E->getOpaqueValue());
+  Record.AddStmt(E->getAwaiterOpaqueValue());
 }
 
 void ASTStmtWriter::VisitCoawaitExpr(CoawaitExpr *E) {
   VisitCoroutineSuspendExpr(E);
-  Record.push_back(E->isImplicit());
   Code = serialization::EXPR_COAWAIT;
 }
 

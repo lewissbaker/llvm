@@ -461,13 +461,19 @@ void ASTStmtReader::VisitCoreturnStmt(CoreturnStmt *S) {
   S->IsImplicit = Record.readInt() != 0;
 }
 
+void ASTStmtReader::VisitCoroutineTailCallExpr(CoroutineTailCallExpr *E) {
+  VisitExpr(E);
+  for (auto &SubExpr: E->SubExprs)
+    SubExpr = Record.readSubStmt();
+  E->HandlePlaceholder = cast_or_null<OpaqueValueExpr>(Record.readSubStmt());
+}
+
 void ASTStmtReader::VisitCoawaitExpr(CoawaitExpr *E) {
   VisitExpr(E);
   E->KeywordLoc = ReadSourceLocation();
   for (auto &SubExpr: E->SubExprs)
     SubExpr = Record.readSubStmt();
-  E->OpaqueValue = cast_or_null<OpaqueValueExpr>(Record.readSubStmt());
-  E->setIsImplicit(Record.readInt() != 0);
+  E->AwaiterOpaqueValue = cast_or_null<OpaqueValueExpr>(Record.readSubStmt());
 }
 
 void ASTStmtReader::VisitCoyieldExpr(CoyieldExpr *E) {
@@ -475,7 +481,7 @@ void ASTStmtReader::VisitCoyieldExpr(CoyieldExpr *E) {
   E->KeywordLoc = ReadSourceLocation();
   for (auto &SubExpr: E->SubExprs)
     SubExpr = Record.readSubStmt();
-  E->OpaqueValue = cast_or_null<OpaqueValueExpr>(Record.readSubStmt());
+  E->AwaiterOpaqueValue = cast_or_null<OpaqueValueExpr>(Record.readSubStmt());
 }
 
 void ASTStmtReader::VisitDependentCoawaitExpr(DependentCoawaitExpr *E) {
